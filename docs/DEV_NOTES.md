@@ -87,8 +87,11 @@ copyToClipboard, setHotkey, suspendHotkey, startup. Сигнал: notify(message
 генерация/запуск конфига), остальное поступательно. Потолок = как у NekoBox (ядро одно).
 
 ## 9. СЛЕДУЮЩИЕ ШАГИ (движок), по порядку
-1. **Связать engine.py ↔ Backend**: connect/disconnect → Core.start(профиль)/stop; status из процесса/порта (убрать мок).
-2. **Системный прокси** Windows (реестр Internet Settings → 127.0.0.1:2080) при подключении/сброс при отключении.
+1. ✅ СДЕЛАНО — engine.py связан с Backend: реальный connect/stop, статус из поллинга порта.
+   **РЕАЛЬНО ПРОВЕРЕНО** на сервере (vless+Reality+PQC `encryption=mlkem768…`): exit IP через туннель = IP сервера.
+   В парсере/профиле добавлены поля `encryption` и `fp` (utls). build_outbound их учитывает.
+   Нюанс: «Подключено» = ядро+порт; реальный туннель подтверждается IP-проверкой (см. шаг 4).
+2. ✅ СДЕЛАНО — системный прокси Windows (winreg + WinINET refresh) при подключении / сброс при отключении и выходе.
 3. **config-gen**: маршрутизация (route rules + bundled geosite/geoip rule-sets), DNS, mux, sniffing из UI-настроек.
 4. **Clash API** ядра: реальная статистика ↓/↑ и пинг (URL delay) — заменить мок.
 5. **Подписки по URL** — реальная HTTP-загрузка + парс.

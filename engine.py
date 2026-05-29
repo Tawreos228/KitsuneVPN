@@ -33,7 +33,7 @@ def _tls_block(s: dict) -> dict | None:
     tls = {
         "enabled": True,
         "server_name": s.get("sni") or s.get("address", ""),
-        "utls": {"enabled": True, "fingerprint": "chrome"},
+        "utls": {"enabled": True, "fingerprint": s.get("fp") or "chrome"},
     }
     if s.get("reality"):
         tls["reality"] = {
@@ -72,6 +72,8 @@ def build_outbound(s: dict) -> dict:
         ob = {"type": "vless", **base, "uuid": s.get("uuid", "")}
         if s.get("flow"):
             ob["flow"] = s["flow"]
+        if s.get("encryption") and s["encryption"] != "none":
+            ob["encryption"] = s["encryption"]
     elif proto == "vmess":
         ob = {"type": "vmess", **base, "uuid": s.get("uuid", ""), "security": "auto"}
     elif proto == "trojan":

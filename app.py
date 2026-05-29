@@ -465,7 +465,7 @@ class Backend(QObject):
     # ---- сервера (профили) ----
     _PROFILE_KEYS = ["protocol", "address", "port", "uuid", "password", "method",
                      "tls", "sni", "reality", "pbk", "sid", "transport", "path",
-                     "host", "serviceName", "wgKey", "flow", "name"]
+                     "host", "serviceName", "wgKey", "flow", "name", "encryption", "fp"]
 
     def _make_server(self, data: dict, keep_ping=None) -> dict:
         name = (data.get("name") or "").strip() or (data.get("address") or "Сервер")
@@ -571,6 +571,8 @@ class Backend(QObject):
                 data["pbk"] = g("pbk")
                 data["sid"] = g("sid")
                 data["flow"] = g("flow")
+                data["encryption"] = g("encryption")
+                data["fp"] = g("fp")
                 t = g("type", "tcp")
                 data["transport"] = t if t in ("tcp", "ws", "grpc", "xhttp") else "tcp"
                 data["path"] = g("path")
