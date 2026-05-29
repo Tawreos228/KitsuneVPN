@@ -15,10 +15,13 @@ import time
 import base64
 import random
 import ctypes
+import winreg
 import tempfile
 from ctypes import wintypes
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs, unquote, quote
+
+import engine
 
 from PySide6.QtCore import QObject, Signal, Slot, Property, QTimer, Qt, QAbstractNativeEventFilter, QMetaObject
 from PySide6.QtGui import QIcon, QPixmap, QPainter, QColor
@@ -98,9 +101,11 @@ class Backend(QObject):
             },
         ]
 
-        self._connect_timer = QTimer(self)
-        self._connect_timer.setSingleShot(True)
-        self._connect_timer.timeout.connect(self._finish_connect)
+        self._core = engine.Core()
+        self._conn_tries = 0
+        self._connect_timer = QTimer(self)       # поллинг порта во время подключения
+        self._connect_timer.setInterval(300)
+        self._connect_timer.timeout.connect(self._poll_connect)
 
         self._tick = QTimer(self)
         self._tick.setInterval(1000)
@@ -226,13 +231,63 @@ class Backend(QObject):
     @Slot()
     def toggle(self) -> None:
         if self._status == "disconnected":
-            self._set_status("connecting")
-            self._connect_timer.start(1700)
+            self._begin_connect()
         elif self._status == "connecting":
             self._connect_timer.stop()
+            self._core.stop()
             self._set_status("disconnected")
         else:
             self._disconnect()
+
+    def _selected_server(self):
+        for s in self._cur()["servers"]:
+            if s["country"] + " · " + s["city"] == self._server:
+                return s
+        return None
+
+    def _begin_connect(self) -> None:
+        srv = self._selected_server()
+        if not srv or not srv.get("address"):
+            self.notify.emit("Нет данных сервера — выберите рабочий профиль", "error")
+            return
+        self._set_status("connecting")
+        try:
+            self._core.start(srv)
+        except Exception as e:
+            self._set_status("disconnected")
+            self.notify.emit("Ошибка ядра · " + str(e)[:80], "error")
+            return
+        self._conn_tries = 0
+        self._connect_timer.start()
+
+    def _poll_connect(self) -> None:
+        self._conn_tries += 1
+        if engine.port_listening():
+            self._connect_timer.stop()
+            self._on_connected()
+        elif self._conn_tries > 26:          # ~8 c
+            self._connect_timer.stop()
+            self._core.stop()
+            self._set_status("disconnected")
+            self.notify.emit("Не удалось подключиться · таймаут", "error")
+
+    def _set_system_proxy(self, enable: bool, port: int = engine.MIXED_PORT) -> None:
+        try:
+            key = winreg.OpenKey(winreg.HKEY_CURRENT_USER,
+                                 r"Software\Microsoft\Windows\CurrentVersion\Internet Settings",
+                                 0, winreg.KEY_SET_VALUE)
+            if enable:
+                winreg.SetValueEx(key, "ProxyEnable", 0, winreg.REG_DWORD, 1)
+                winreg.SetValueEx(key, "ProxyServer", 0, winreg.REG_SZ, f"127.0.0.1:{port}")
+                winreg.SetValueEx(key, "ProxyOverride", 0, winreg.REG_SZ, "<local>")
+            else:
+                winreg.SetValueEx(key, "ProxyEnable", 0, winreg.REG_DWORD, 0)
+            winreg.CloseKey(key)
+            w = ctypes.windll.Wininet
+            w.InternetSetOptionW(0, 39, 0, 0)   # INTERNET_OPTION_SETTINGS_CHANGED
+            w.InternetSetOptionW(0, 37, 0, 0)   # INTERNET_OPTION_REFRESH
+        except Exception:
+            pass
 
     @Slot()
     def connectVpn(self) -> None:
@@ -243,6 +298,7 @@ class Backend(QObject):
     def disconnectVpn(self) -> None:
         if self._status == "connecting":
             self._connect_timer.stop()
+            self._core.stop()
             self._set_status("disconnected")
         elif self._status == "connected":
             self._disconnect()
@@ -332,8 +388,9 @@ class Backend(QObject):
             self._pending_autoconnect = False
             if self._auto_connect_mode == 1:
                 self.selectBest()          # к быстрейшему по свежему пингу
-            if self._status == "disconnected":
-                self.toggle()              # подключиться
+            srv = self._selected_server()
+            if self._status == "disconnected" and srv and srv.get("address"):
+                self.toggle()              # подключиться (только если профиль рабочий)
 
     # ---- группы / подписки ----
     @Slot(int)
@@ -659,19 +716,24 @@ class Backend(QObject):
             self._status = value
             self.statusChanged.emit()
 
-    def _finish_connect(self) -> None:
+    def _on_connected(self) -> None:
         self._set_status("connected")
-        self._ping = random.randint(34, 96)
+        self._ping = random.randint(34, 96)          # TODO: реальный пинг через Clash API
         self._elapsed = 0
         self._down = 0.0
         self._up = 0.0
         self._exit_ip = "%d.%d.%d.%d" % (random.randint(5, 223), random.randint(0, 255),
-                                         random.randint(0, 255), random.randint(1, 254))
+                                         random.randint(0, 255), random.randint(1, 254))  # TODO: реальный IP
         self.statsChanged.emit()
         self._tick.start()
+        if self._mode == "proxy":
+            self._set_system_proxy(True)
         self.notify.emit("Подключено · " + self._server, "success")
 
     def _disconnect(self) -> None:
+        self._connect_timer.stop()
+        self._core.stop()
+        self._set_system_proxy(False)
         self._tick.stop()
         self._set_status("disconnected")
         self._ping = 0
@@ -886,6 +948,11 @@ class AppController(QObject):
 
     @Slot()
     def quit(self) -> None:
+        try:
+            self._backend._core.stop()
+            self._backend._set_system_proxy(False)
+        except Exception:
+            pass
         self._tray.hide()
         self._app.quit()
 
