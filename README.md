@@ -171,6 +171,27 @@ Being honest about scope:
 
 ---
 
+## Feedback & contributing
+
+This is an actively developing project &mdash; expect rough edges. **All feedback is welcome:**
+
+- 🐞 &nbsp; **Something broken?** &mdash; [open a bug report](../../issues/new?template=bug_report.md).
+  Include your Windows version, what you did, what happened, and what you expected.
+- 🤔 &nbsp; **Something behaves weirdly?** &mdash; tell us. Even if it's "this dialog felt
+  awkward", that's useful. UX papercuts are real bugs.
+- 💡 &nbsp; **Want a feature?** &mdash; [request it](../../issues/new?template=feature_request.md).
+  Protocol you'd like supported, workflow that's missing, integration ideas &mdash; all on the table.
+- 🌍 &nbsp; **Translation help** &mdash; the i18n dictionary lives in `qml/App/T.qml`.
+  Adding a new language is straightforward (one new entry in the `dict` object).
+- 🔧 &nbsp; **Pull requests** are welcome. For non-trivial changes, please open an issue
+  first so we can agree on the direction before you spend time.
+
+If your VPN setup is unusual (atypical subscription format, custom protocol, exotic
+routing scenario), we'd especially love to hear about it &mdash; that's how the
+exotic-protocols list shortens.
+
+---
+
 ## License
 
 MIT. Use it, fork it, ship it. The sing-box engine carries its own license — see its repo.
