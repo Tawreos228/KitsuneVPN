@@ -63,6 +63,11 @@ ApplicationWindow {
     property bool setReconnect: true
     property bool setKill: false
     property bool setTray: true
+    // Тема: разблокировка «Китсунэ» через пасхалку (5 тапов по логотипу) — навсегда.
+    // themeScheme — зеркало Theme.scheme для персиста. Восстановление: см. importSettings.
+    property bool   themeUnlocked: false
+    property string themeScheme:   Theme.scheme
+    Connections { target: Theme; function onSchemeChanged() { win.themeScheme = Theme.scheme } }
     // TUN / DNS / Mux / sniffing
     property bool setTun: false
     property int  tunStack: 0          // 0 gVisor · 1 system · 2 mixed
@@ -285,6 +290,7 @@ ApplicationWindow {
             rtAdblock: rtAdblock, rtProxyAll: rtProxyAll, rtFinal: rtFinal, routeRules: routeRules,
             portMixed: portMixed, mtu: mtu, dnsRemote: dnsRemote, dnsDirect: dnsDirect,
             lang: T.lang,
+            themeScheme: themeScheme, themeUnlocked: themeUnlocked,
             routingProfiles: routingProfiles, currentProfileId: currentProfileId,
             customApps: (typeof backend !== "undefined" && backend) ? JSON.parse(backend.customAppsJson || "[]") : []
         })
@@ -316,6 +322,11 @@ ApplicationWindow {
         if (s.dnsRemote !== undefined) dnsRemote = s.dnsRemote
         if (s.dnsDirect !== undefined) dnsDirect = s.dnsDirect
         if (s.lang !== undefined && (s.lang === "ru" || s.lang === "en")) T.lang = s.lang
+        // тема: восстанавливаем разблокировку и активную схему
+        if (s.themeUnlocked !== undefined) themeUnlocked = !!s.themeUnlocked
+        if (s.themeScheme !== undefined && (s.themeScheme === "light" || s.themeScheme === "dark" || s.themeScheme === "kitsune")) {
+            Theme.scheme = (s.themeScheme === "kitsune" && !themeUnlocked) ? "dark" : s.themeScheme
+        }
         // профили: восстанавливаем список и активный профиль (applyProfile перетрёт rt* и routeRules)
         if (s.routingProfiles !== undefined && Array.isArray(s.routingProfiles) && s.routingProfiles.length > 0)
             routingProfiles = s.routingProfiles
@@ -491,15 +502,23 @@ ApplicationWindow {
         return h > 0 ? (h + ":" + p(m) + ":" + p(sec)) : (p(m) + ":" + p(sec))
     }
 
-    // секретный жест: 5 тапов по логотипу -> тема «Китсунэ»
+    // секретный жест: 5 тапов по логотипу -> разблокировка темы «Китсунэ».
+    // Первая активация — разблокировка (themeUnlocked = true, навсегда) + переход на лису.
+    // Последующие — обычное переключение, лиса уже постоянно живёт в ThemeToggle.
     property int logoTaps: 0
     function onLogoTap() {
         logoTaps++
         logoTapTimer.restart()
         if (logoTaps >= 5) {
             logoTaps = 0
-            Theme.scheme = (Theme.scheme === "kitsune" ? "dark" : "kitsune")
-            toast.show(Theme.scheme === "kitsune" ? T.s("misc.bigfox") : T.s("misc.normalth"), "info")
+            if (!themeUnlocked) {
+                themeUnlocked = true
+                Theme.scheme = "kitsune"
+                toast.show(T.s("misc.bigfox"), "info")
+            } else {
+                Theme.scheme = (Theme.scheme === "kitsune" ? "dark" : "kitsune")
+                toast.show(Theme.scheme === "kitsune" ? T.s("misc.bigfox") : T.s("misc.normalth"), "info")
+            }
         }
     }
 
