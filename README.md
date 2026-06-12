@@ -6,6 +6,8 @@
 
 **A Windows VPN client that doesn't get in your way.**
 
+[![Latest release](https://img.shields.io/github/v/release/Tawreos228/KitsuneVPN?label=download&color=FF7A2F&style=for-the-badge)](../../releases/latest)
+
 [![sing-box](https://img.shields.io/badge/engine-sing--box_1.13-FF7A2F)](https://github.com/SagerNet/sing-box)
 [![Qt](https://img.shields.io/badge/UI-PySide6_%2F_QML-0A84FF)](https://doc.qt.io/qtforpython-6/)
 [![Languages](https://img.shields.io/badge/i18n-RU%20%2F%20EN-blueviolet)](#)
@@ -103,6 +105,40 @@ No registry writes outside of the Windows Run key (only if you enable autostart 
 2. Paste a `vless://` / `vmess://` / `trojan://` / `ss://` link with **Paste from clipboard**,
    or open **+ Subscription** and add your subscription URL.
 3. Pick a server, hit the big connect ring on the **Dashboard**. Done.
+
+---
+
+## Screenshots
+
+<table>
+<tr>
+<td width="50%" valign="top">
+<img src="docs/screenshots/01-connected.png" alt="Connected — TUN mode">
+<sub><b>Dashboard.</b> Live traffic graph, session uptime, current exit IP, latency to the picked server.</sub>
+</td>
+<td width="50%" valign="top">
+<img src="docs/screenshots/05-servers.png" alt="Servers and subscriptions">
+<sub><b>Servers.</b> Subscription groups with auto-refresh, per-server latency ping, favorites.</sub>
+</td>
+</tr>
+<tr>
+<td width="50%" valign="top">
+<img src="docs/screenshots/02-routing.png" alt="Routing profiles and rules">
+<sub><b>Routing.</b> Named profiles, LAN bypass / RU-direct / ads-block presets, custom rules (domain / geoip / block).</sub>
+</td>
+<td width="50%" valign="top">
+<img src="docs/screenshots/03-per-app.png" alt="Per-app routing">
+<sub><b>Per-app rules.</b> 3-state toggle — Auto / VPN / Direct — for every installed exe. Add custom paths.</sub>
+</td>
+</tr>
+<tr>
+<td colspan="2" align="center" valign="top">
+<img src="docs/screenshots/04-settings.png" width="80%" alt="Settings">
+<br>
+<sub><b>Settings.</b> Bilingual UI, sing-box core auto-updater, autostart, auto-reconnect, kill-switch, global hotkey.</sub>
+</td>
+</tr>
+</table>
 
 ---
 
