@@ -98,6 +98,9 @@ class Backend(QObject):
     _exitIpDone = Signal(str)
     _verifyDone = Signal("QVariantMap", str, bool)   # info, expected_code, was_connected
     verifyChanged = Signal()
+    speedtestChanged = Signal()
+    _speedtestProgress = Signal(int, int, str, float)   # done, total, current_name, mbps_for_one
+    _speedtestFinished = Signal()
     _subDone = Signal(int, "QVariantList", bool, int, int)   # gi, servers, ok, invalid, profile_interval_h (0 если сервер не задал)
     _logLine = Signal(str)                          # одна строка лога ядра (из фонового потока)
     logsChanged = Signal()
@@ -125,6 +128,11 @@ class Backend(QObject):
         self._exit_ip = ""                     # внешний IP (мок)
         self._verify_status = "idle"           # idle | checking | match | mismatch | off | error
         self._verify_info: dict = {}           # последний результат lookup_ip_info
+        self._speedtest_running = False
+        self._speedtest_done = 0               # сколько серверов уже замерили
+        self._speedtest_total = 0              # сколько всего в очереди
+        self._speedtest_current = ""           # имя текущего «country · city»
+        self._speedtest_cancel = False
         self._mode = "tun"                     # proxy | tun (default: tun — auto-elevation handles UAC once)
         self._pinging = False
         self._auto_connect = True
@@ -175,6 +183,8 @@ class Backend(QObject):
         self._activePingDone.connect(self._on_active_ping)
         self._exitIpDone.connect(self._on_exit_ip)
         self._verifyDone.connect(self._on_verify_done)
+        self._speedtestProgress.connect(self._on_speedtest_progress)
+        self._speedtestFinished.connect(self._on_speedtest_finished)
         self._subDone.connect(self._on_sub_done)
         self._log_buf: deque = deque(maxlen=2000)   # rolling-буфер строк лога
         self._logLine.connect(self._on_log_line)
@@ -292,6 +302,8 @@ class Backend(QObject):
             "coreloading":       "Загрузка обновления ядра…",
             "coreupdated":       "Ядро обновлено · {ver}",
             "coreupdfail":       "Не удалось обновить · {err}",
+            "stsstart":          "Замеряем скорость · {n} серверов",
+            "stsdone":           "Замер скорости завершён",
             "appavail":          "Доступна новая версия Kitsune · {tag}",
             "appuptodate":       "Установлена актуальная версия Kitsune · {ver}",
             "apploading":        "Загрузка обновления Kitsune…",
@@ -353,6 +365,8 @@ class Backend(QObject):
             "coreloading":       "Downloading core update…",
             "coreupdated":       "Core updated · {ver}",
             "coreupdfail":       "Update failed · {err}",
+            "stsstart":          "Speed-testing {n} servers",
+            "stsdone":           "Speed test complete",
             "appavail":          "New Kitsune version available · {tag}",
             "appuptodate":       "Kitsune is up to date · {ver}",
             "apploading":        "Downloading Kitsune update…",
@@ -944,6 +958,130 @@ class Backend(QObject):
             else:
                 self._verify_status = "match"     # данных для сравнения нет — не паникуем
         self.verifyChanged.emit()
+
+    # ---- speedtest ----
+    def _get_speedtest_running(self) -> bool: return self._speedtest_running
+    def _get_speedtest_done(self) -> int: return self._speedtest_done
+    def _get_speedtest_total(self) -> int: return self._speedtest_total
+    def _get_speedtest_current(self) -> str: return self._speedtest_current
+    def _get_speedtest_progress(self) -> float:
+        if self._speedtest_total <= 0:
+            return 0.0
+        return self._speedtest_done / self._speedtest_total
+
+    speedtestRunning  = Property(bool,  _get_speedtest_running,  notify=speedtestChanged)
+    speedtestDone     = Property(int,   _get_speedtest_done,     notify=speedtestChanged)
+    speedtestTotal    = Property(int,   _get_speedtest_total,    notify=speedtestChanged)
+    speedtestCurrent  = Property(str,   _get_speedtest_current,  notify=speedtestChanged)
+    speedtestProgress = Property(float, _get_speedtest_progress, notify=speedtestChanged)
+
+    @Slot()
+    def cancelSpeedtest(self) -> None:
+        self._speedtest_cancel = True
+
+    @Slot()
+    def speedtestAll(self) -> None:
+        """Замерить скорость каждого валидного сервера в текущей группе.
+        Требует отключения — поднимаем временное ядро, перебираем через clash_select,
+        результат сохраняем в server.speedMbps + server.speedAt, потом core.stop()."""
+        if self._status != "disconnected":
+            self.notify.emit(self._tr("disconnectfirst"), "error")
+            return
+        if self._speedtest_running:
+            return
+        valid = self._valid_servers_of_group()
+        if not valid:
+            self.notify.emit(self._tr("novalidservers"), "error")
+            return
+
+        self._speedtest_running = True
+        self._speedtest_cancel = False
+        self._speedtest_done = 0
+        self._speedtest_total = len(valid)
+        self._speedtest_current = ""
+        self.speedtestChanged.emit()
+        self.notify.emit(self._tr("stsstart", n=len(valid)), "info")
+
+        # snapshot для worker'а — group_index + копии серверов
+        gi = self._currentGroup
+        servers_snap = [dict(s) for s in valid]
+        settings = dict(self._settings)
+        settings["tun"] = False                # TUN тут лишний — нужен просто mixed-прокси
+        settings["activeIdx"] = 0
+        port = self._effective_port()
+
+        sig_prog = self._speedtestProgress
+        sig_fin = self._speedtestFinished
+
+        def work() -> None:
+            try:
+                self._core.start(servers_snap, settings, on_log=None)
+            except Exception as e:
+                self.notify.emit(self._tr("coreerror", err=str(e)[:80]), "error")
+                sig_fin.emit()
+                return
+            # ждём пока ядро поднимется (port-poll, как в _poll_connect)
+            for _ in range(40):                # ~4 сек макс
+                if engine.port_listening(port):
+                    break
+                time.sleep(0.1)
+            else:
+                self._core.stop()
+                sig_fin.emit()
+                return
+
+            for i, s in enumerate(servers_snap):
+                if self._speedtest_cancel:
+                    break
+                tag = engine.server_tag(i)
+                try:
+                    engine.clash_select(tag)
+                except Exception:
+                    pass
+                time.sleep(0.6)                # дать ядру переключить outbound
+                res = engine.speedtest_via_proxy(port)
+                mbps = float(res["mbps"]) if res else 0.0
+                name = (s.get("country", "") + " · " + s.get("city", "")).strip(" ·")
+                sig_prog.emit(i + 1, len(servers_snap), name, mbps)
+
+            try:
+                self._core.stop()
+            except Exception:
+                pass
+            sig_fin.emit()
+
+        threading.Thread(target=work, daemon=True).start()
+
+    @Slot(int, int, str, float)
+    def _on_speedtest_progress(self, done: int, total: int, name: str, mbps: float) -> None:
+        """Обновляем servers[] активной группы: ставим speedMbps + speedAt для замеренного сервера."""
+        if not (0 <= self._currentGroup < len(self._groups)):
+            return
+        g = dict(self._groups[self._currentGroup])
+        new_servers = []
+        for s in g.get("servers", []):
+            n = (s.get("country", "") + " · " + s.get("city", "")).strip(" ·")
+            if n == name:
+                s = dict(s)
+                s["speedMbps"] = mbps
+                s["speedAt"] = time.time()
+            new_servers.append(s)
+        g["servers"] = new_servers
+        self._groups = self._groups[:self._currentGroup] + [g] + self._groups[self._currentGroup + 1:]
+        self._speedtest_done = done
+        self._speedtest_total = total
+        self._speedtest_current = name
+        self.serversChanged.emit()
+        self.groupsChanged.emit()
+        self.speedtestChanged.emit()
+
+    @Slot()
+    def _on_speedtest_finished(self) -> None:
+        self._speedtest_running = False
+        self._speedtest_cancel = False
+        self.speedtestChanged.emit()
+        self._save_state()
+        self.notify.emit(self._tr("stsdone"), "success")
 
     @Slot(str)
     def _on_log_line(self, line: str) -> None:

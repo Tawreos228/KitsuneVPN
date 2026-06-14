@@ -1026,7 +1026,7 @@ ApplicationWindow {
                         var s = src[i]
                         if (favOnly && s.fav !== true) continue
                         if (q.length === 0 || (s.country + " " + s.city + " " + s.code).toLowerCase().indexOf(q) !== -1)
-                            out.push({ code: s.code, country: s.country, city: s.city, ping: s.ping, fav: s.fav === true, _idx: i })
+                            out.push({ code: s.code, country: s.country, city: s.city, ping: s.ping, fav: s.fav === true, speedMbps: s.speedMbps || 0, _idx: i })
                     }
                     if (sortMode === 1)
                         out.sort(function(a, b) { return a.ping - b.ping })
@@ -1199,6 +1199,69 @@ ApplicationWindow {
                         TapHandler { onTapped: locPage.sortMode = (locPage.sortMode === 1 ? 0 : 1) }
                     }
 
+                    // кнопка замера скорости всех серверов в группе
+                    Rectangle {
+                        id: speedBtn
+                        readonly property bool active: backend.speedtestRunning
+                        // при замере становится длинной с прогрессом — занимает место favBtn справа
+                        implicitWidth: active ? Math.max(220, speedTextRow.implicitWidth + 64) : (speedDefaultRow.implicitWidth + 24)
+                        Behavior on implicitWidth { NumberAnimation { duration: Theme.durBase; easing.type: Easing.OutCubic } }
+                        height: 36; radius: 10
+                        color: active ? Theme.surfaceAlt : (speedHover.hovered ? Theme.surface : Theme.surface)
+                        border.width: 1
+                        border.color: active ? Theme.accent : Theme.stroke
+                        Behavior on color { ColorAnimation { duration: Theme.durFast } }
+
+                        // прогресс-заливка
+                        Rectangle {
+                            anchors.left: parent.left; anchors.top: parent.top; anchors.bottom: parent.bottom
+                            anchors.margins: 1
+                            width: (parent.width - 2) * backend.speedtestProgress
+                            radius: parent.radius - 1
+                            color: Theme.accent
+                            opacity: speedBtn.active ? 0.20 : 0
+                            Behavior on width { NumberAnimation { duration: 200; easing.type: Easing.OutCubic } }
+                            Behavior on opacity { NumberAnimation { duration: Theme.durBase } }
+                        }
+                        // idle-состояние
+                        Row {
+                            id: speedDefaultRow
+                            visible: !speedBtn.active
+                            anchors.centerIn: parent; spacing: 6
+                            Text { text: String.fromCharCode(0xEC4A); font.family: Theme.iconFamily; font.pixelSize: 14; color: Theme.textSub; anchors.verticalCenter: parent.verticalCenter }
+                            Text { text: T.s("btn.measure"); color: Theme.text; font.family: Theme.fontFamily; font.pixelSize: 13; font.weight: Font.Medium; anchors.verticalCenter: parent.verticalCenter }
+                        }
+                        // running-состояние
+                        Row {
+                            id: speedTextRow
+                            visible: speedBtn.active
+                            anchors.centerIn: parent; spacing: 8
+                            Text {
+                                text: backend.speedtestDone + "/" + backend.speedtestTotal
+                                color: Theme.accent
+                                font.family: Theme.fontFamily; font.pixelSize: 13; font.weight: Font.DemiBold
+                                anchors.verticalCenter: parent.verticalCenter
+                            }
+                            Text {
+                                text: backend.speedtestCurrent || "…"
+                                color: Theme.textSub
+                                font.family: Theme.fontFamily; font.pixelSize: 12
+                                anchors.verticalCenter: parent.verticalCenter
+                                elide: Text.ElideRight
+                            }
+                            Text {
+                                text: "✕"
+                                color: cancelSpdHover.hovered ? Theme.red : Theme.textMuted
+                                font.family: Theme.fontFamily; font.pixelSize: 13; font.weight: Font.Bold
+                                anchors.verticalCenter: parent.verticalCenter
+                                HoverHandler { id: cancelSpdHover; cursorShape: Qt.PointingHandCursor }
+                                TapHandler { onTapped: backend.cancelSpeedtest() }
+                            }
+                        }
+                        HoverHandler { id: speedHover; enabled: !speedBtn.active; cursorShape: Qt.PointingHandCursor }
+                        TapHandler { enabled: !speedBtn.active; onTapped: backend.speedtestAll() }
+                    }
+
                     Rectangle {
                         id: favBtn
                         readonly property bool on: locPage.favOnly
@@ -1242,6 +1305,7 @@ ApplicationWindow {
                         country: modelData.country
                         city: modelData.city
                         ping: modelData.ping
+                        speedMbps: modelData.speedMbps
                         editable: true
                         rowIndex: modelData._idx
                         fav: modelData.fav

@@ -1062,6 +1062,42 @@ def exit_ip(port: int = MIXED_PORT, timeout: float = 6.0) -> str | None:
     return None
 
 
+# Cloudflare Speed CDN — самый стабильный/быстрый endpoint, возвращает любой объём байт.
+# Альтернатива: http://speedtest.tele2.net/5MB.zip — но Cloudflare надёжнее.
+SPEEDTEST_URL = "https://speed.cloudflare.com/__down?bytes=8000000"   # 8 МБ
+SPEEDTEST_MAX_SECONDS = 5.0
+
+
+def speedtest_via_proxy(port: int, url: str = SPEEDTEST_URL,
+                        timeout: float = 8.0) -> dict | None:
+    """Измеряет throughput скачиванием url через mixed-прокси ядра.
+    Останавливается через SPEEDTEST_MAX_SECONDS — на быстрых линках получим точный
+    замер, на медленных — то что успело пройти за лимит.
+    Возвращает {bytes, seconds, mbps} (MB/s, decimal) или None при ошибке."""
+    proxy = f"http://{CLASH_HOST}:{int(port)}"
+    opener = urllib.request.build_opener(
+        urllib.request.ProxyHandler({"http": proxy, "https": proxy}))
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "Kitsune/1.0"})
+        start = time.monotonic()
+        with opener.open(req, timeout=timeout) as r:
+            read = 0
+            while True:
+                chunk = r.read(65536)
+                if not chunk:
+                    break
+                read += len(chunk)
+                if time.monotonic() - start >= SPEEDTEST_MAX_SECONDS:
+                    break
+        elapsed = time.monotonic() - start
+    except Exception:
+        return None
+    if elapsed <= 0 or read < 32 * 1024:    # меньше 32КБ = неактуальный замер (rate-limit / cutoff)
+        return None
+    mbps = (read / elapsed) / (1024 * 1024)
+    return {"bytes": read, "seconds": elapsed, "mbps": round(mbps, 2)}
+
+
 def lookup_ip_info(port: int | None = None, timeout: float = 6.0) -> dict | None:
     """Sanity-check: {ip, country, country_code, city, org} либо None.
 

@@ -13,6 +13,7 @@ Item {
     property string country
     property string city
     property int ping
+    property real speedMbps: 0
     readonly property string fullName: country + " · " + city
     readonly property bool selected: backend.server === fullName
     property bool editable: false
@@ -118,6 +119,27 @@ Item {
                     Behavior on opacity { NumberAnimation { duration: Theme.durFast } }
                 }
                 MouseArea { id: penMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: card.edit() }
+            }
+
+            // speed-badge — показываем если есть свежий замер; цвет — по скорости
+            Rectangle {
+                Layout.alignment: Qt.AlignVCenter
+                visible: card.speedMbps > 0
+                implicitWidth: spdText.implicitWidth + 12
+                implicitHeight: 22
+                radius: 11
+                readonly property color spdC: card.speedMbps >= 3 ? Theme.green
+                                            : card.speedMbps >= 1 ? Theme.amber
+                                            :                       Theme.red
+                color: Qt.rgba(spdC.r, spdC.g, spdC.b, 0.14)
+                border.width: 1; border.color: spdC
+                Text {
+                    id: spdText
+                    anchors.centerIn: parent
+                    text: card.speedMbps.toFixed(1) + " MB/s"
+                    color: parent.spdC
+                    font.family: Theme.fontFamily; font.pixelSize: 10; font.weight: Font.DemiBold
+                }
             }
 
             // пинг — фиксированная колонка, текст к правому краю
