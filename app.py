@@ -96,6 +96,8 @@ class Backend(QObject):
     _pingAllDone = Signal(int, "QVariantList")
     _activePingDone = Signal(int)
     _exitIpDone = Signal(str)
+    _verifyDone = Signal("QVariantMap", str, bool)   # info, expected_code, was_connected
+    verifyChanged = Signal()
     _subDone = Signal(int, "QVariantList", bool, int, int)   # gi, servers, ok, invalid, profile_interval_h (0 если сервер не задал)
     _logLine = Signal(str)                          # одна строка лога ядра (из фонового потока)
     logsChanged = Signal()
@@ -121,6 +123,8 @@ class Backend(QObject):
         self._up = 0.0
         self._elapsed = 0                      # секунды
         self._exit_ip = ""                     # внешний IP (мок)
+        self._verify_status = "idle"           # idle | checking | match | mismatch | off | error
+        self._verify_info: dict = {}           # последний результат lookup_ip_info
         self._mode = "tun"                     # proxy | tun (default: tun — auto-elevation handles UAC once)
         self._pinging = False
         self._auto_connect = True
@@ -170,6 +174,7 @@ class Backend(QObject):
         self._pingAllDone.connect(self._on_ping_all)
         self._activePingDone.connect(self._on_active_ping)
         self._exitIpDone.connect(self._on_exit_ip)
+        self._verifyDone.connect(self._on_verify_done)
         self._subDone.connect(self._on_sub_done)
         self._log_buf: deque = deque(maxlen=2000)   # rolling-буфер строк лога
         self._logLine.connect(self._on_log_line)
@@ -882,6 +887,63 @@ class Backend(QObject):
         if self._status == "connected":
             self._exit_ip = ip
             self.statsChanged.emit()
+
+    # ---- sanity-check «реально под VPN?» ----
+    def _get_verify_status(self) -> str: return self._verify_status
+    def _get_verify_ip(self) -> str: return str(self._verify_info.get("ip") or "")
+    def _get_verify_country(self) -> str: return str(self._verify_info.get("country") or "")
+    def _get_verify_country_code(self) -> str: return str(self._verify_info.get("country_code") or "")
+    def _get_verify_city(self) -> str: return str(self._verify_info.get("city") or "")
+    def _get_verify_org(self) -> str: return str(self._verify_info.get("org") or "")
+
+    verifyStatus      = Property(str, _get_verify_status, notify=verifyChanged)
+    verifyIp          = Property(str, _get_verify_ip, notify=verifyChanged)
+    verifyCountry     = Property(str, _get_verify_country, notify=verifyChanged)
+    verifyCountryCode = Property(str, _get_verify_country_code, notify=verifyChanged)
+    verifyCity        = Property(str, _get_verify_city, notify=verifyChanged)
+    verifyOrg         = Property(str, _get_verify_org, notify=verifyChanged)
+
+    def _expected_country_code(self) -> str:
+        """Код страны выбранного сервера — для сравнения с фактическим exit-IP."""
+        for s in self._cur().get("servers", []):
+            if s["country"] + " · " + s["city"] == self._server:
+                return str(s.get("code") or "").upper()
+        return ""
+
+    @Slot()
+    def verifyVpn(self) -> None:
+        """Запросить exit-IP с гео через прокси (если подключены) или напрямую.
+        Сравниваем страну с выбранным сервером — это и есть sanity-check «реально под VPN?»."""
+        self._verify_status = "checking"
+        self.verifyChanged.emit()
+        port = self._effective_port() if self._status == "connected" else None
+        expected = self._expected_country_code()
+        was_connected = self._status == "connected"
+
+        sig = self._verifyDone
+        def work() -> None:
+            info = engine.lookup_ip_info(port=port)
+            # подключены, но через прокси не вышло — глянем напрямую (узнаем что VPN дохлый)
+            if not info and port:
+                info = engine.lookup_ip_info(port=None)
+            sig.emit(info or {}, expected, was_connected)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    @Slot("QVariantMap", str, bool)
+    def _on_verify_done(self, info: dict, expected_code: str, was_connected: bool) -> None:
+        self._verify_info = info or {}
+        if not info:
+            self._verify_status = "error"
+        elif not was_connected:
+            self._verify_status = "off"          # не подключались — это наш реальный IP, VPN не активен
+        else:
+            actual = (info.get("country_code") or "").upper()
+            if actual and expected:
+                self._verify_status = "match" if actual == expected else "mismatch"
+            else:
+                self._verify_status = "match"     # данных для сравнения нет — не паникуем
+        self.verifyChanged.emit()
 
     @Slot(str)
     def _on_log_line(self, line: str) -> None:

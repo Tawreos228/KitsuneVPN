@@ -1062,6 +1062,41 @@ def exit_ip(port: int = MIXED_PORT, timeout: float = 6.0) -> str | None:
     return None
 
 
+def lookup_ip_info(port: int | None = None, timeout: float = 6.0) -> dict | None:
+    """Sanity-check: {ip, country, country_code, city, org} либо None.
+
+    port=None → запрос напрямую, минуя туннель (увидим РЕАЛЬНЫЙ IP — для случая «VPN не работает»);
+    port=N    → запрос через mixed-проксю ядра (увидим IP exit-нода).
+
+    Используем 2 провайдера с fallback'ом — ipapi.co и ip-api.com — у обоих rate-limit
+    в районе 1 запрос/сек, для on-demand кнопки достаточно."""
+    if port:
+        proxy = f"http://{CLASH_HOST}:{int(port)}"
+        opener = urllib.request.build_opener(
+            urllib.request.ProxyHandler({"http": proxy, "https": proxy}))
+    else:
+        opener = urllib.request.build_opener()
+    for url in ("https://ipapi.co/json/", "http://ip-api.com/json/"):
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "Kitsune/1.0"})
+            with opener.open(req, timeout=timeout) as r:
+                d = json.loads(r.read().decode("utf-8", "ignore"))
+        except Exception:
+            continue
+        # унифицируем поля — у провайдеров разные имена
+        ip = d.get("ip") or d.get("query") or ""
+        if not ip:
+            continue
+        return {
+            "ip":           ip,
+            "country":      d.get("country_name") or d.get("country") or "",
+            "country_code": (d.get("country_code") or d.get("countryCode") or "").upper(),
+            "city":         d.get("city") or "",
+            "org":          d.get("org") or d.get("isp") or "",
+        }
+    return None
+
+
 class Core:
     """Жизненный цикл процесса sing-box."""
 

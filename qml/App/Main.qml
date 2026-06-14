@@ -861,6 +861,96 @@ ApplicationWindow {
                     }
                 }
 
+                // ── sanity-check «реально под VPN?» ─────────────────────────────────
+                // Один компактный блок ниже Мой IP: до клика — серая ссылка-кнопка,
+                // во время запроса — крутящийся индикатор, после — цветной итог + детали.
+                Item {
+                    id: verifyBlock
+                    Layout.alignment: Qt.AlignHCenter
+                    Layout.topMargin: 6
+                    implicitWidth: verifyRow.implicitWidth + 24
+                    implicitHeight: 28
+
+                    readonly property color outColor:
+                        backend.verifyStatus === "match"    ? Theme.green
+                      : backend.verifyStatus === "mismatch" ? Theme.amber
+                      : backend.verifyStatus === "off"      ? Theme.red
+                      : backend.verifyStatus === "error"    ? Theme.red
+                      :                                       Theme.textSub
+
+                    readonly property string statusLabel:
+                        backend.verifyStatus === "checking" ? T.s("vrf.checking")
+                      : backend.verifyStatus === "match"    ? T.s("vrf.match")
+                      : backend.verifyStatus === "mismatch" ? T.s("vrf.mismatch")
+                      : backend.verifyStatus === "off"      ? T.s("vrf.off")
+                      : backend.verifyStatus === "error"    ? T.s("vrf.error")
+                      :                                       T.s("vrf.idle")
+
+                    Rectangle {
+                        anchors.fill: parent
+                        radius: 14
+                        color: backend.verifyStatus === "idle"
+                            ? (verifyHover.hovered ? Theme.surfaceAlt : "transparent")
+                            : Qt.rgba(verifyBlock.outColor.r, verifyBlock.outColor.g, verifyBlock.outColor.b, 0.12)
+                        border.width: backend.verifyStatus === "idle" ? 0 : 1
+                        border.color: verifyBlock.outColor
+                        Behavior on color { ColorAnimation { duration: Theme.durBase } }
+                    }
+
+                    RowLayout {
+                        id: verifyRow
+                        anchors.centerIn: parent
+                        spacing: 6
+
+                        // dot / spinner
+                        Item {
+                            implicitWidth: 10; implicitHeight: 10
+                            Rectangle {
+                                anchors.centerIn: parent
+                                width: 8; height: 8; radius: 4
+                                color: verifyBlock.outColor
+                                visible: backend.verifyStatus !== "checking"
+                            }
+                            // мини-спиннер для checking
+                            Rectangle {
+                                anchors.centerIn: parent
+                                width: 10; height: 10; radius: 5
+                                color: "transparent"
+                                border.color: Theme.textSub; border.width: 1.5
+                                visible: backend.verifyStatus === "checking"
+                                Rectangle {
+                                    width: 4; height: 1.5
+                                    color: Theme.accent
+                                    x: 5; y: 4
+                                }
+                                RotationAnimation on rotation {
+                                    running: backend.verifyStatus === "checking"
+                                    from: 0; to: 360
+                                    duration: 900; loops: Animation.Infinite
+                                }
+                            }
+                        }
+
+                        Text {
+                            text: verifyBlock.statusLabel
+                            color: backend.verifyStatus === "idle" ? Theme.textSub : verifyBlock.outColor
+                            font.family: Theme.fontFamily; font.pixelSize: 12; font.weight: Font.DemiBold
+                        }
+                        // детали справа от ярлыка — после успешного запроса
+                        Text {
+                            visible: backend.verifyStatus !== "idle" && backend.verifyStatus !== "checking" && backend.verifyIp
+                            text: " · " + backend.verifyCountry +
+                                  (backend.verifyCity ? ", " + backend.verifyCity : "") +
+                                  (backend.verifyOrg ? " · " + backend.verifyOrg : "")
+                            color: Theme.textSub
+                            font.family: Theme.fontFamily; font.pixelSize: 12
+                        }
+                    }
+
+                    HoverHandler { id: verifyHover; enabled: backend.verifyStatus !== "checking"; cursorShape: Qt.PointingHandCursor }
+                    TapHandler { enabled: backend.verifyStatus !== "checking"; onTapped: backend.verifyVpn() }
+                }
+
                 // график активности
                 Waveform {
                     Layout.fillWidth: true
