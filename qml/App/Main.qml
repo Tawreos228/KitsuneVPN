@@ -3162,6 +3162,65 @@ ApplicationWindow {
                 anchors.horizontalCenter: parent.horizontalCenter
                 width: Math.min(440, parent.width - 48)
             }
+
+            // Drag-and-drop импорт: WireGuard .conf или текст с ссылками vless://...
+            DropArea {
+                id: dropArea
+                anchors.fill: parent
+                keys: ["text/uri-list"]
+                onEntered: function(drag) { drag.accept() }
+                onDropped: function(drop) {
+                    for (var i = 0; i < drop.urls.length; i++) {
+                        var p = drop.urls[i].toString().replace(/^file:\/+/, "")
+                        p = decodeURIComponent(p)
+                        backend.importFromFile(p)
+                    }
+                    drop.accept()
+                }
+            }
+
+            // overlay при перетаскивании — мягко затухает после drop
+            Rectangle {
+                id: dropOverlay
+                anchors.fill: parent
+                opacity: dropArea.containsDrag ? 1 : 0
+                visible: opacity > 0.01
+                color: Qt.rgba(Theme.bg.r, Theme.bg.g, Theme.bg.b, 0.92)
+                Behavior on opacity { NumberAnimation { duration: Theme.durBase } }
+
+                Rectangle {
+                    anchors.centerIn: parent
+                    width: 380; height: 200
+                    radius: 18
+                    color: Theme.surface
+                    border.width: 2; border.color: Theme.accent
+                    scale: dropArea.containsDrag ? 1 : 0.92
+                    Behavior on scale { NumberAnimation { duration: Theme.durBase; easing.type: Easing.OutBack } }
+
+                    ColumnLayout {
+                        anchors.centerIn: parent
+                        spacing: 14
+                        Text {
+                            Layout.alignment: Qt.AlignHCenter
+                            text: String.fromCharCode(0xE898)
+                            font.family: Theme.iconFamily; font.pixelSize: 48
+                            color: Theme.accent
+                        }
+                        Text {
+                            Layout.alignment: Qt.AlignHCenter
+                            text: T.s("drop.dropfile")
+                            color: Theme.text
+                            font.family: Theme.fontFamily; font.pixelSize: 17; font.weight: Font.DemiBold
+                        }
+                        Text {
+                            Layout.alignment: Qt.AlignHCenter
+                            text: T.s("drop.formats")
+                            color: Theme.textSub
+                            font.family: Theme.fontFamily; font.pixelSize: 12
+                        }
+                    }
+                }
+            }
         }
     }
 

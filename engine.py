@@ -298,6 +298,59 @@ def _tun_inbound(settings: dict) -> dict:
     }
 
 
+def parse_wireguard_conf(text: str) -> dict | None:
+    """Парсит WireGuard .conf (стандартный INI-формат) в server-dict, который понимает
+    Backend._make_server / _wireguard_endpoint. Минимум для валидного сервера:
+    PrivateKey в [Interface] + PublicKey + Endpoint в [Peer]. Возвращает None если что-то критичное
+    отсутствует."""
+    import configparser
+    cp = configparser.ConfigParser(strict=False, interpolation=None)
+    try:
+        cp.read_string(text)
+    except Exception:
+        return None
+    # WG может писать секции с разным регистром — нормализуем
+    sections = {s.lower(): s for s in cp.sections()}
+    if "interface" not in sections or "peer" not in sections:
+        return None
+    iface = cp[sections["interface"]]
+    peer = cp[sections["peer"]]
+    endpoint = (peer.get("Endpoint") or peer.get("endpoint") or "").strip()
+    if not endpoint or ":" not in endpoint:
+        return None
+    host, _, port_str = endpoint.rpartition(":")
+    try:
+        port = int(port_str)
+    except ValueError:
+        return None
+    out = {
+        "protocol": "wireguard",
+        "address":  host,
+        "port":     port,
+        "wgKey":    (iface.get("PrivateKey") or iface.get("privatekey") or "").strip(),
+        "peerKey":  (peer.get("PublicKey") or peer.get("publickey") or "").strip(),
+        "name":     host,
+    }
+    addr = (iface.get("Address") or iface.get("address") or "").strip()
+    if addr:
+        out["localAddr"] = addr
+    allowed = (peer.get("AllowedIPs") or peer.get("allowedips") or "").strip()
+    if allowed:
+        out["allowedIps"] = allowed
+    psk = (peer.get("PresharedKey") or peer.get("presharedkey") or "").strip()
+    if psk:
+        out["psk"] = psk
+    mtu = (iface.get("MTU") or iface.get("mtu") or "").strip()
+    if mtu:
+        try:
+            out["mtu"] = int(mtu)
+        except ValueError:
+            pass
+    if not (out["wgKey"] and out["peerKey"]):
+        return None
+    return out
+
+
 def _wireguard_endpoint(s: dict) -> dict:
     """Профиль WireGuard -> sing-box endpoint (в 1.11+ WG живёт в секции `endpoints`, не `outbounds`).
     Минимум для рабочего соединения: server+port, private_key (wgKey), peer_public_key (peerKey)."""

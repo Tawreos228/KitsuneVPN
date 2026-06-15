@@ -304,6 +304,8 @@ class Backend(QObject):
             "coreupdfail":       "Не удалось обновить · {err}",
             "stsstart":          "Замеряем скорость · {n} серверов",
             "stsdone":           "Замер скорости завершён",
+            "filereadfail":      "Не удалось прочитать файл",
+            "wgbadformat":       "Файл .conf — не валидный WireGuard",
             "appavail":          "Доступна новая версия Kitsune · {tag}",
             "appuptodate":       "Установлена актуальная версия Kitsune · {ver}",
             "apploading":        "Загрузка обновления Kitsune…",
@@ -367,6 +369,8 @@ class Backend(QObject):
             "coreupdfail":       "Update failed · {err}",
             "stsstart":          "Speed-testing {n} servers",
             "stsdone":           "Speed test complete",
+            "filereadfail":      "Failed to read file",
+            "wgbadformat":       "File is not a valid WireGuard .conf",
             "appavail":          "New Kitsune version available · {tag}",
             "appuptodate":       "Kitsune is up to date · {ver}",
             "apploading":        "Downloading Kitsune update…",
@@ -1911,6 +1915,42 @@ class Backend(QObject):
 
     @Slot(str, result=int)
     def importText(self, text: str) -> int:
+        return self._import_text(text)
+
+    @Slot(str, result=int)
+    def importFromFile(self, path: str) -> int:
+        """Drag-and-drop импорт: читает файл, сниффит формат, кидает в нужный парсер.
+        Поддерживается:
+          - WireGuard .conf (INI-формат с [Interface]/[Peer])
+          - .txt / любой текст с vless:// vmess:// trojan:// ss:// или их base64-списком
+        Возвращает количество добавленных серверов."""
+        try:
+            with open(path, encoding="utf-8", errors="replace") as f:
+                text = f.read()
+        except Exception:
+            self.notify.emit(self._tr("filereadfail"), "error")
+            return 0
+        # 1) WireGuard .conf — по наличию [Interface]+[Peer], даже без правильного расширения
+        low = text.lower()
+        if "[interface]" in low and "[peer]" in low:
+            wg = engine.parse_wireguard_conf(text)
+            if not wg:
+                self.notify.emit(self._tr("wgbadformat"), "error")
+                return 0
+            srv = self._make_server(wg)
+            ok, _err = self._validate_server(srv)
+            srv["_valid"] = ok
+            if not ok:
+                self.notify.emit(self._tr("noneadded", n=1), "error")
+                return 0
+            servers = list(self._cur()["servers"]) + [srv]
+            self._replace_group_servers(servers)
+            self.notify.emit(self._tr("imported", n=1), "success")
+            return 1
+        # 2) Иначе — обычный текст со ссылками (вкл. base64-списки подписок)
+        decoded = self._decode_subscription(text)
+        if decoded:
+            text = "\n".join(decoded)
         return self._import_text(text)
 
     @Slot(int, result=str)
