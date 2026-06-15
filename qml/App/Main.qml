@@ -68,6 +68,11 @@ ApplicationWindow {
     property bool   themeUnlocked: false
     property string themeScheme:   Theme.scheme
     Connections { target: Theme; function onSchemeChanged() { win.themeScheme = Theme.scheme } }
+    // первый запуск — мастер настройки (3 шага)
+    property bool firstRunDone: false
+    property bool wizardOpen:   false
+    property int  wizardStep:   0     // 0 язык · 1 подписка · 2 готово
+    property string wizardInput: ""
     // TUN / DNS / Mux / sniffing
     property bool setTun: false
     property int  tunStack: 0          // 0 gVisor · 1 system · 2 mixed
@@ -295,6 +300,7 @@ ApplicationWindow {
             portMixed: portMixed, mtu: mtu, dnsRemote: dnsRemote, dnsDirect: dnsDirect,
             lang: T.lang,
             themeScheme: themeScheme, themeUnlocked: themeUnlocked,
+            firstRunDone: firstRunDone,
             routingProfiles: routingProfiles, currentProfileId: currentProfileId,
             customApps: (typeof backend !== "undefined" && backend) ? JSON.parse(backend.customAppsJson || "[]") : []
         })
@@ -333,6 +339,7 @@ ApplicationWindow {
         if (s.themeScheme !== undefined && (s.themeScheme === "light" || s.themeScheme === "dark" || s.themeScheme === "kitsune")) {
             Theme.scheme = (s.themeScheme === "kitsune" && !themeUnlocked) ? "dark" : s.themeScheme
         }
+        if (s.firstRunDone !== undefined) firstRunDone = !!s.firstRunDone
         // профили: восстанавливаем список и активный профиль (applyProfile перетрёт rt* и routeRules)
         if (s.routingProfiles !== undefined && Array.isArray(s.routingProfiles) && s.routingProfiles.length > 0)
             routingProfiles = s.routingProfiles
@@ -364,6 +371,8 @@ ApplicationWindow {
             backend.setKillSwitchEnabled(setKill)         // прокинуть начальное значение kill-switch
             backend.setSubRefreshInterval(subRefreshInterval)   // порядок важен: сначала интервал
             backend.setSubAutoRefresh(setSubAutoRefresh)        // потом включение — стартанёт timer/QTimer.singleShot уже в startup()
+            // первый запуск — открываем мастер настройки после короткой паузы (даёт UI собраться)
+            if (!firstRunDone) Qt.callLater(function() { wizardStep = 0; wizardOpen = true })
             backend.setLang(T.lang)                       // i18n: язык Backend-notify
         }
     }
@@ -3161,6 +3170,257 @@ ApplicationWindow {
                 anchors.bottomMargin: 18
                 anchors.horizontalCenter: parent.horizontalCenter
                 width: Math.min(440, parent.width - 48)
+            }
+
+            // ── мастер первого запуска (3 шага: язык → подписка → готово) ──
+            Item {
+                id: wizard
+                anchors.fill: parent
+                visible: opacity > 0.01
+                opacity: win.wizardOpen ? 1 : 0
+                Behavior on opacity { NumberAnimation { duration: Theme.durBase } }
+                z: 999
+
+                function finish() {
+                    win.firstRunDone = true
+                    win.wizardOpen = false
+                    if (typeof appCtl !== 'undefined' && appCtl) appCtl.persistSettings()
+                }
+                function submitInput() {
+                    var v = win.wizardInput.trim()
+                    if (v.length === 0) return
+                    if (v.indexOf("http://") === 0 || v.indexOf("https://") === 0)
+                        backend.addSubscription(T.s("wiz.subdefname"), v, true)
+                    else
+                        backend.importText(v)
+                    win.wizardInput = ""
+                }
+
+                // затемнение фона + блок кликов мимо карточки
+                Rectangle { anchors.fill: parent; color: Qt.rgba(0, 0, 0, 0.66) }
+                MouseArea {
+                    anchors.fill: parent
+                    onClicked: function(m) { m.accepted = true }
+                    onPressed: function(m) { m.accepted = true }
+                }
+
+                Rectangle {
+                    id: wizCard
+                    anchors.centerIn: parent
+                    width: 520; height: 420
+                    radius: 22
+                    color: Theme.surface
+                    border.width: 1; border.color: Theme.stroke
+                    scale: win.wizardOpen ? 1 : 0.93
+                    Behavior on scale { NumberAnimation { duration: Theme.durBase; easing.type: Easing.OutBack } }
+
+                    // прогресс-точки сверху
+                    Row {
+                        anchors.top: parent.top; anchors.topMargin: 22
+                        anchors.horizontalCenter: parent.horizontalCenter
+                        spacing: 8
+                        Repeater {
+                            model: 3
+                            delegate: Rectangle {
+                                required property int index
+                                width: index === win.wizardStep ? 22 : 7
+                                height: 7; radius: 3.5
+                                color: index <= win.wizardStep ? Theme.accent : Theme.stroke
+                                Behavior on width { NumberAnimation { duration: Theme.durBase; easing.type: Easing.OutCubic } }
+                                Behavior on color { ColorAnimation { duration: Theme.durBase } }
+                            }
+                        }
+                    }
+
+                    // ── контент шагов
+                    Item {
+                        anchors.fill: parent
+                        anchors.topMargin: 56
+                        anchors.bottomMargin: 24
+                        anchors.leftMargin: 32
+                        anchors.rightMargin: 32
+
+                        // STEP 0 — язык
+                        ColumnLayout {
+                            anchors.fill: parent; spacing: 18
+                            visible: win.wizardStep === 0
+                            Text {
+                                Layout.alignment: Qt.AlignHCenter
+                                text: "🦊"; font.pixelSize: 56
+                            }
+                            Text {
+                                Layout.alignment: Qt.AlignHCenter
+                                text: T.s("wiz.welcome")
+                                color: Theme.text
+                                font.family: Theme.fontFamily; font.pixelSize: 22; font.weight: Font.DemiBold
+                            }
+                            Text {
+                                Layout.alignment: Qt.AlignHCenter
+                                Layout.maximumWidth: parent.width - 20
+                                text: T.s("wiz.langhint")
+                                color: Theme.textSub
+                                wrapMode: Text.WordWrap; horizontalAlignment: Text.AlignHCenter
+                                font.family: Theme.fontFamily; font.pixelSize: 13
+                            }
+                            RowLayout {
+                                Layout.alignment: Qt.AlignHCenter
+                                Layout.topMargin: 8
+                                spacing: 14
+                                Repeater {
+                                    model: [{l:"ru",t:"Русский"},{l:"en",t:"English"}]
+                                    delegate: Rectangle {
+                                        required property var modelData
+                                        readonly property bool sel: T.lang === modelData.l
+                                        implicitWidth: 150; implicitHeight: 52; radius: 14
+                                        color: sel ? Theme.accent : Theme.surfaceAlt
+                                        border.width: 1; border.color: sel ? Theme.accent : Theme.stroke
+                                        Behavior on color { ColorAnimation { duration: Theme.durFast } }
+                                        Text {
+                                            anchors.centerIn: parent
+                                            text: modelData.t
+                                            color: parent.sel ? "white" : Theme.text
+                                            font.family: Theme.fontFamily; font.pixelSize: 15; font.weight: Font.DemiBold
+                                        }
+                                        TapHandler { onTapped: T.lang = modelData.l }
+                                        HoverHandler { cursorShape: Qt.PointingHandCursor }
+                                    }
+                                }
+                            }
+                            Item { Layout.fillHeight: true }
+                            RowLayout {
+                                Layout.fillWidth: true
+                                Item { Layout.fillWidth: true }
+                                Rectangle {
+                                    implicitWidth: 130; implicitHeight: 42; radius: 12
+                                    color: Theme.accent
+                                    Text { anchors.centerIn: parent; text: T.s("wiz.next"); color: "white"
+                                        font.family: Theme.fontFamily; font.pixelSize: 14; font.weight: Font.DemiBold }
+                                    TapHandler { onTapped: win.wizardStep = 1 }
+                                    HoverHandler { cursorShape: Qt.PointingHandCursor }
+                                }
+                            }
+                        }
+
+                        // STEP 1 — подписка
+                        ColumnLayout {
+                            anchors.fill: parent; spacing: 14
+                            visible: win.wizardStep === 1
+                            Text {
+                                Layout.alignment: Qt.AlignHCenter
+                                text: T.s("wiz.subtitle")
+                                color: Theme.text
+                                font.family: Theme.fontFamily; font.pixelSize: 20; font.weight: Font.DemiBold
+                            }
+                            Text {
+                                Layout.alignment: Qt.AlignHCenter
+                                Layout.maximumWidth: parent.width
+                                text: T.s("wiz.subhint")
+                                color: Theme.textSub
+                                wrapMode: Text.WordWrap; horizontalAlignment: Text.AlignHCenter
+                                font.family: Theme.fontFamily; font.pixelSize: 13
+                            }
+                            Rectangle {
+                                Layout.fillWidth: true; Layout.topMargin: 8
+                                implicitHeight: 110
+                                radius: 12
+                                color: Theme.surfaceAlt
+                                border.width: 1; border.color: subTextInput.activeFocus ? Theme.accent : Theme.stroke
+                                Behavior on border.color { ColorAnimation { duration: Theme.durFast } }
+                                ScrollView {
+                                    anchors.fill: parent; anchors.margins: 12
+                                    TextArea {
+                                        id: subTextInput
+                                        placeholderText: T.s("wiz.subplaceholder")
+                                        placeholderTextColor: Theme.textMuted
+                                        text: win.wizardInput
+                                        onTextChanged: win.wizardInput = text
+                                        wrapMode: TextArea.Wrap
+                                        color: Theme.text
+                                        font.family: Theme.fontFamily; font.pixelSize: 13
+                                        background: Item {}
+                                    }
+                                }
+                            }
+                            Item { Layout.fillHeight: true }
+                            RowLayout {
+                                Layout.fillWidth: true
+                                Rectangle {
+                                    implicitWidth: 100; implicitHeight: 42; radius: 12
+                                    color: "transparent"; border.width: 1; border.color: Theme.stroke
+                                    Text { anchors.centerIn: parent; text: T.s("wiz.back"); color: Theme.textSub
+                                        font.family: Theme.fontFamily; font.pixelSize: 14 }
+                                    TapHandler { onTapped: win.wizardStep = 0 }
+                                    HoverHandler { cursorShape: Qt.PointingHandCursor }
+                                }
+                                Item { Layout.fillWidth: true }
+                                Rectangle {
+                                    implicitWidth: 100; implicitHeight: 42; radius: 12
+                                    color: "transparent"
+                                    Text { anchors.centerIn: parent; text: T.s("wiz.skip"); color: Theme.textSub
+                                        font.family: Theme.fontFamily; font.pixelSize: 14 }
+                                    TapHandler { onTapped: win.wizardStep = 2 }
+                                    HoverHandler { cursorShape: Qt.PointingHandCursor }
+                                }
+                                Rectangle {
+                                    implicitWidth: 140; implicitHeight: 42; radius: 12
+                                    readonly property bool active: win.wizardInput.trim().length > 0
+                                    color: active ? Theme.accent : Theme.surfaceAlt
+                                    border.width: active ? 0 : 1; border.color: Theme.stroke
+                                    Text { anchors.centerIn: parent; text: T.s("wiz.add"); color: parent.active ? "white" : Theme.textMuted
+                                        font.family: Theme.fontFamily; font.pixelSize: 14; font.weight: Font.DemiBold }
+                                    TapHandler { enabled: parent.active; onTapped: { wizard.submitInput(); win.wizardStep = 2 } }
+                                    HoverHandler { enabled: parent.active; cursorShape: Qt.PointingHandCursor }
+                                }
+                            }
+                        }
+
+                        // STEP 2 — готово
+                        ColumnLayout {
+                            anchors.fill: parent; spacing: 18
+                            visible: win.wizardStep === 2
+                            Text {
+                                Layout.alignment: Qt.AlignHCenter
+                                text: "✨"; font.pixelSize: 56
+                            }
+                            Text {
+                                Layout.alignment: Qt.AlignHCenter
+                                text: T.s("wiz.donetitle")
+                                color: Theme.text
+                                font.family: Theme.fontFamily; font.pixelSize: 22; font.weight: Font.DemiBold
+                            }
+                            Text {
+                                Layout.alignment: Qt.AlignHCenter
+                                Layout.maximumWidth: parent.width
+                                text: T.s("wiz.donehint")
+                                color: Theme.textSub
+                                wrapMode: Text.WordWrap; horizontalAlignment: Text.AlignHCenter
+                                font.family: Theme.fontFamily; font.pixelSize: 13
+                            }
+                            Item { Layout.fillHeight: true }
+                            Rectangle {
+                                Layout.alignment: Qt.AlignHCenter
+                                implicitWidth: 170; implicitHeight: 46; radius: 13
+                                color: Theme.accent
+                                Text { anchors.centerIn: parent; text: T.s("wiz.golet"); color: "white"
+                                    font.family: Theme.fontFamily; font.pixelSize: 15; font.weight: Font.DemiBold }
+                                TapHandler { onTapped: wizard.finish() }
+                                HoverHandler { cursorShape: Qt.PointingHandCursor }
+                            }
+                        }
+                    }
+
+                    // крестик закрытия в правом верхнем углу — на любом шаге
+                    Rectangle {
+                        anchors.top: parent.top; anchors.right: parent.right
+                        anchors.margins: 12
+                        width: 30; height: 30; radius: 15
+                        color: closeHover.hovered ? Theme.surfaceAlt : "transparent"
+                        Text { anchors.centerIn: parent; text: "✕"; color: Theme.textSub
+                            font.family: Theme.fontFamily; font.pixelSize: 14 }
+                        HoverHandler { id: closeHover; cursorShape: Qt.PointingHandCursor }
+                        TapHandler { onTapped: wizard.finish() }
+                    }
+                }
             }
 
             // Drag-and-drop импорт: WireGuard .conf или текст с ссылками vless://...

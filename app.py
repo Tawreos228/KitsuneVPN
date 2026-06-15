@@ -2359,6 +2359,11 @@ class AppController(QObject):
         # уничтожаем сцену в следующем тике (нельзя из её же колбэка)
         QTimer.singleShot(0, self._destroy_ui)
 
+    @Slot()
+    def persistSettings(self) -> None:
+        """Принудительно скинуть QML-snapshot на диск (для wizard'а, реактивных триггеров)."""
+        self._capture_settings()
+
     def _capture_settings(self) -> None:
         try:
             roots = self._engine.rootObjects() if self._engine else []
