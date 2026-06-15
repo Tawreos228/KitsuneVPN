@@ -1117,15 +1117,18 @@ def exit_ip(port: int = MIXED_PORT, timeout: float = 6.0) -> str | None:
 
 # Cloudflare Speed CDN — самый стабильный/быстрый endpoint, возвращает любой объём байт.
 # Альтернатива: http://speedtest.tele2.net/5MB.zip — но Cloudflare надёжнее.
-SPEEDTEST_URL = "https://speed.cloudflare.com/__down?bytes=8000000"   # 8 МБ
-SPEEDTEST_MAX_SECONDS = 5.0
+# 16 МБ: с запасом, чтобы быстрые линки не упёрлись в потолок до SPEEDTEST_MAX_SECONDS
+SPEEDTEST_URL = "https://speed.cloudflare.com/__down?bytes=16000000"
+SPEEDTEST_MAX_SECONDS = 6.0
+SPEEDTEST_SAMPLE_INTERVAL = 0.15        # шаг live-замера (≈7 кадров/сек, плавно в UI)
 
 
 def speedtest_via_proxy(port: int, url: str = SPEEDTEST_URL,
-                        timeout: float = 8.0) -> dict | None:
+                        timeout: float = 8.0, on_sample=None) -> dict | None:
     """Измеряет throughput скачиванием url через mixed-прокси ядра.
     Останавливается через SPEEDTEST_MAX_SECONDS — на быстрых линках получим точный
     замер, на медленных — то что успело пройти за лимит.
+    on_sample(mbps) — необязательный колбэк для live-обновления UI (раз в ~150ms).
     Возвращает {bytes, seconds, mbps} (MB/s, decimal) или None при ошибке."""
     proxy = f"http://{CLASH_HOST}:{int(port)}"
     opener = urllib.request.build_opener(
@@ -1133,6 +1136,7 @@ def speedtest_via_proxy(port: int, url: str = SPEEDTEST_URL,
     try:
         req = urllib.request.Request(url, headers={"User-Agent": "Kitsune/1.0"})
         start = time.monotonic()
+        last_emit = start
         with opener.open(req, timeout=timeout) as r:
             read = 0
             while True:
@@ -1140,7 +1144,15 @@ def speedtest_via_proxy(port: int, url: str = SPEEDTEST_URL,
                 if not chunk:
                     break
                 read += len(chunk)
-                if time.monotonic() - start >= SPEEDTEST_MAX_SECONDS:
+                now = time.monotonic()
+                elapsed = now - start
+                if on_sample and now - last_emit >= SPEEDTEST_SAMPLE_INTERVAL and elapsed > 0.05:
+                    try:
+                        on_sample((read / elapsed) / (1024 * 1024))
+                    except Exception:
+                        pass
+                    last_emit = now
+                if elapsed >= SPEEDTEST_MAX_SECONDS:
                     break
         elapsed = time.monotonic() - start
     except Exception:

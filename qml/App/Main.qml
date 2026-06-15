@@ -1212,24 +1212,27 @@ ApplicationWindow {
                     Rectangle {
                         id: speedBtn
                         readonly property bool active: backend.speedtestRunning
-                        // при замере становится длинной с прогрессом — занимает место favBtn справа
-                        implicitWidth: active ? Math.max(220, speedTextRow.implicitWidth + 64) : (speedDefaultRow.implicitWidth + 24)
+                        // плавно интерполируем live-значение → большой бойкий гейдж в UI
+                        property real displayMbps: backend.speedtestLiveMbps
+                        Behavior on displayMbps { NumberAnimation { duration: 180; easing.type: Easing.OutCubic } }
+
+                        implicitWidth: active ? 360 : (speedDefaultRow.implicitWidth + 24)
                         Behavior on implicitWidth { NumberAnimation { duration: Theme.durBase; easing.type: Easing.OutCubic } }
                         height: 36; radius: 10
-                        color: active ? Theme.surfaceAlt : (speedHover.hovered ? Theme.surface : Theme.surface)
+                        color: active ? Theme.surfaceAlt : Theme.surface
                         border.width: 1
                         border.color: active ? Theme.accent : Theme.stroke
                         Behavior on color { ColorAnimation { duration: Theme.durFast } }
 
-                        // прогресс-заливка
+                        // прогресс-заливка (сколько серверов уже сделано)
                         Rectangle {
                             anchors.left: parent.left; anchors.top: parent.top; anchors.bottom: parent.bottom
                             anchors.margins: 1
                             width: (parent.width - 2) * backend.speedtestProgress
                             radius: parent.radius - 1
                             color: Theme.accent
-                            opacity: speedBtn.active ? 0.20 : 0
-                            Behavior on width { NumberAnimation { duration: 200; easing.type: Easing.OutCubic } }
+                            opacity: speedBtn.active ? 0.16 : 0
+                            Behavior on width { NumberAnimation { duration: 250; easing.type: Easing.OutCubic } }
                             Behavior on opacity { NumberAnimation { duration: Theme.durBase } }
                         }
                         // idle-состояние
@@ -1240,29 +1243,54 @@ ApplicationWindow {
                             Text { text: String.fromCharCode(0xEC4A); font.family: Theme.iconFamily; font.pixelSize: 14; color: Theme.textSub; anchors.verticalCenter: parent.verticalCenter }
                             Text { text: T.s("btn.measure"); color: Theme.text; font.family: Theme.fontFamily; font.pixelSize: 13; font.weight: Font.Medium; anchors.verticalCenter: parent.verticalCenter }
                         }
-                        // running-состояние
-                        Row {
-                            id: speedTextRow
+                        // running-состояние: большая live-цифра слева + контекст справа
+                        RowLayout {
                             visible: speedBtn.active
-                            anchors.centerIn: parent; spacing: 8
+                            anchors.fill: parent
+                            anchors.leftMargin: 14
+                            anchors.rightMargin: 12
+                            spacing: 10
+                            Row {
+                                spacing: 3
+                                Layout.alignment: Qt.AlignVCenter
+                                Text {
+                                    text: speedBtn.displayMbps.toFixed(1)
+                                    color: Theme.accent
+                                    font.family: Theme.fontFamily
+                                    font.pixelSize: 22
+                                    font.weight: Font.Bold
+                                    anchors.verticalCenter: parent.verticalCenter
+                                }
+                                Text {
+                                    text: " MB/s"
+                                    color: Theme.textSub
+                                    font.family: Theme.fontFamily
+                                    font.pixelSize: 11
+                                    font.weight: Font.DemiBold
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    anchors.verticalCenterOffset: 4
+                                }
+                            }
+                            Item { Layout.fillWidth: true }
                             Text {
                                 text: backend.speedtestDone + "/" + backend.speedtestTotal
-                                color: Theme.accent
-                                font.family: Theme.fontFamily; font.pixelSize: 13; font.weight: Font.DemiBold
-                                anchors.verticalCenter: parent.verticalCenter
+                                color: Theme.text
+                                font.family: Theme.fontFamily; font.pixelSize: 12; font.weight: Font.DemiBold
+                                Layout.alignment: Qt.AlignVCenter
                             }
                             Text {
                                 text: backend.speedtestCurrent || "…"
                                 color: Theme.textSub
-                                font.family: Theme.fontFamily; font.pixelSize: 12
-                                anchors.verticalCenter: parent.verticalCenter
+                                font.family: Theme.fontFamily; font.pixelSize: 11
+                                Layout.alignment: Qt.AlignVCenter
+                                Layout.preferredWidth: 110
                                 elide: Text.ElideRight
                             }
                             Text {
                                 text: "✕"
                                 color: cancelSpdHover.hovered ? Theme.red : Theme.textMuted
                                 font.family: Theme.fontFamily; font.pixelSize: 13; font.weight: Font.Bold
-                                anchors.verticalCenter: parent.verticalCenter
+                                Layout.alignment: Qt.AlignVCenter
                                 HoverHandler { id: cancelSpdHover; cursorShape: Qt.PointingHandCursor }
                                 TapHandler { onTapped: backend.cancelSpeedtest() }
                             }

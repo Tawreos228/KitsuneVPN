@@ -101,6 +101,7 @@ class Backend(QObject):
     speedtestChanged = Signal()
     _speedtestProgress = Signal(int, int, str, float)   # done, total, current_name, mbps_for_one
     _speedtestFinished = Signal()
+    _speedtestLiveSample = Signal(float)                 # live mbps текущего сервера (раз в ~150ms)
     _subDone = Signal(int, "QVariantList", bool, int, int)   # gi, servers, ok, invalid, profile_interval_h (0 если сервер не задал)
     _logLine = Signal(str)                          # одна строка лога ядра (из фонового потока)
     logsChanged = Signal()
@@ -133,6 +134,7 @@ class Backend(QObject):
         self._speedtest_total = 0              # сколько всего в очереди
         self._speedtest_current = ""           # имя текущего «country · city»
         self._speedtest_cancel = False
+        self._speedtest_live_mbps = 0.0        # текущая скорость в реальном времени (для UI-гейджа)
         self._mode = "tun"                     # proxy | tun (default: tun — auto-elevation handles UAC once)
         self._pinging = False
         self._auto_connect = True
@@ -185,6 +187,7 @@ class Backend(QObject):
         self._verifyDone.connect(self._on_verify_done)
         self._speedtestProgress.connect(self._on_speedtest_progress)
         self._speedtestFinished.connect(self._on_speedtest_finished)
+        self._speedtestLiveSample.connect(self._on_speedtest_live_sample)
         self._subDone.connect(self._on_sub_done)
         self._log_buf: deque = deque(maxlen=2000)   # rolling-буфер строк лога
         self._logLine.connect(self._on_log_line)
@@ -972,12 +975,20 @@ class Backend(QObject):
         if self._speedtest_total <= 0:
             return 0.0
         return self._speedtest_done / self._speedtest_total
+    def _get_speedtest_live(self) -> float:
+        return self._speedtest_live_mbps
 
     speedtestRunning  = Property(bool,  _get_speedtest_running,  notify=speedtestChanged)
     speedtestDone     = Property(int,   _get_speedtest_done,     notify=speedtestChanged)
     speedtestTotal    = Property(int,   _get_speedtest_total,    notify=speedtestChanged)
     speedtestCurrent  = Property(str,   _get_speedtest_current,  notify=speedtestChanged)
     speedtestProgress = Property(float, _get_speedtest_progress, notify=speedtestChanged)
+    speedtestLiveMbps = Property(float, _get_speedtest_live,     notify=speedtestChanged)
+
+    @Slot(float)
+    def _on_speedtest_live_sample(self, mbps: float) -> None:
+        self._speedtest_live_mbps = max(0.0, float(mbps))
+        self.speedtestChanged.emit()
 
     @Slot()
     def cancelSpeedtest(self) -> None:
@@ -1016,6 +1027,7 @@ class Backend(QObject):
 
         sig_prog = self._speedtestProgress
         sig_fin = self._speedtestFinished
+        sig_live = self._speedtestLiveSample
 
         def work() -> None:
             try:
@@ -1043,10 +1055,12 @@ class Backend(QObject):
                 except Exception:
                     pass
                 time.sleep(0.6)                # дать ядру переключить outbound
-                res = engine.speedtest_via_proxy(port)
+                sig_live.emit(0.0)              # сброс гейджа на новый сервер
+                res = engine.speedtest_via_proxy(port, on_sample=lambda m: sig_live.emit(m))
                 mbps = float(res["mbps"]) if res else 0.0
                 name = (s.get("country", "") + " · " + s.get("city", "")).strip(" ·")
                 sig_prog.emit(i + 1, len(servers_snap), name, mbps)
+            sig_live.emit(0.0)                  # финальный сброс
 
             try:
                 self._core.stop()
