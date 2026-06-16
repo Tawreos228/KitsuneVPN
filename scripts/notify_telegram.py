@@ -264,6 +264,11 @@ def main(argv: list[str]) -> int:
     try:
         resp = tg_call(token, method, payload)
     except Exception as e:
+        # Идемпотентный edit (контент идентичен текущему) — Telegram возвращает HTTP 400
+        # "message is not modified". Это НЕ ошибка — это no-op success.
+        if edit_id is not None and "message is not modified" in str(e):
+            print(f"✓ no-op edit (message {edit_id} already has this exact content) — {CHANNEL}")
+            return 0
         print(f"ERROR: Telegram: {e}", file=sys.stderr); return 4
     if not resp.get("ok"):
         print(f"ERROR: Telegram non-ok: {resp}", file=sys.stderr); return 5
