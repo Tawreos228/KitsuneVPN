@@ -1037,8 +1037,13 @@ ApplicationWindow {
                         if (q.length === 0 || (s.country + " " + s.city + " " + s.code).toLowerCase().indexOf(q) !== -1)
                             out.push({ code: s.code, country: s.country, city: s.city, ping: s.ping, fav: s.fav === true, speedMbps: s.speedMbps || 0, _idx: i })
                     }
-                    if (sortMode === 1)
-                        out.sort(function(a, b) { return a.ping - b.ping })
+                    // фавориты всегда наверху — независимо от sortMode. В рамках групп
+                    // (favs / не-favs) — либо по пингу, либо в исходном порядке подписки.
+                    out.sort(function(a, b) {
+                        if (a.fav !== b.fav) return a.fav ? -1 : 1
+                        if (sortMode === 1) return a.ping - b.ping
+                        return a._idx - b._idx
+                    })
                     return out
                 }
 
