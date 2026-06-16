@@ -1146,10 +1146,9 @@ ApplicationWindow {
                                 color: Theme.accent
                                 font.family: Theme.fontFamily; font.pixelSize: 11; font.weight: Font.DemiBold
                             }
-                            HoverHandler { cursorShape: Qt.PointingHandCursor }
-                            ToolTip.visible: hoverEnabled && ttHover.hovered
+                            HoverHandler { id: ttHover; cursorShape: Qt.PointingHandCursor }
+                            ToolTip.visible: ttHover.hovered
                             ToolTip.text: T.s("loc.subauto.tt")
-                            HoverHandler { id: ttHover }
                         }
                         Text {
                             visible: !((subInfo.g.profileUpdateInterval || 0) > 0)

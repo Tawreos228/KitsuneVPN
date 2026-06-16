@@ -705,8 +705,9 @@ class Backend(QObject):
             self.notify.emit(self._tr("conntimeout"), "error")
 
     def _clean_leftover_system_proxy(self) -> None:
-        """При старте Backend: выключаем системный прокси ТОЛЬКО если он наш (127.0.0.1:...).
-        Если юзер использует Fiddler/Charles/любой другой прокси-софт — не трогаем его настройки."""
+        """При старте Backend: выключаем системный прокси если он указывает на любой loopback
+        (наш leftover после крэша / killed-процесса). Внешние прокси (Fiddler/Charles за пределами
+        127.x.x.x / localhost / ::1) НЕ трогаем."""
         try:
             key = winreg.OpenKey(
                 winreg.HKEY_CURRENT_USER,
@@ -723,8 +724,19 @@ class Backend(QObject):
             winreg.CloseKey(key)
         except Exception:
             return
-        # Только если прокси включён И указывает на наш loopback — это leftover от нашего крэша
-        if enabled and isinstance(server, str) and server.startswith("127.0.0.1:"):
+        if not enabled or not isinstance(server, str):
+            return
+        # Сервер может быть в нескольких форматах:
+        #   "127.0.0.1:2080"            — простой формат
+        #   "127.0.0.1:2080;https=127.0.0.1:2080" — multi-protocol
+        #   "http=127.0.0.1:2080;https=127.0.0.1:2080;socks=127.0.0.1:2080"
+        # Распарсим все хосты и проверим что КАЖДЫЙ — loopback. Тогда это точно наш leftover.
+        hosts = []
+        for part in server.split(";"):
+            chunk = part.split("=", 1)[-1].strip()
+            host = chunk.rsplit(":", 1)[0] if ":" in chunk else chunk
+            hosts.append(host.lower())
+        if hosts and all(h.startswith("127.") or h in ("localhost", "::1", "[::1]") for h in hosts):
             self._set_system_proxy(False)
 
     def _set_system_proxy(self, enable: bool, port: int = engine.MIXED_PORT) -> None:
@@ -2674,6 +2686,22 @@ def main() -> int:
     app.installNativeEventFilter(hotkeys)
     ctl._hotkeys = hotkeys                     # держим ссылку
     QTimer.singleShot(400, backend.startup)  # авто-пинг + автоподключение на старте
+
+    # Safety net: всегда чистим system proxy + firewall kill-switch при ЛЮБОМ exit'е процесса —
+    # включая SIGTERM от Windows shutdown / Task Manager / sudden Python exception.
+    # atexit ловит graceful exit, для крэшей — _clean_leftover_system_proxy на следующем старте.
+    import atexit, signal
+    def _emergency_cleanup(*_):
+        try: backend._set_system_proxy(False)
+        except Exception: pass
+        try: engine.firewall_unblock_all()
+        except Exception: pass
+        try: backend._core.stop()
+        except Exception: pass
+    atexit.register(_emergency_cleanup)
+    for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGBREAK if hasattr(signal, 'SIGBREAK') else signal.SIGTERM):
+        try: signal.signal(sig, lambda *_: (_emergency_cleanup(), os._exit(0)))
+        except Exception: pass
 
     # один раз elevated — закрепляем silent re-elevation на будущее
     if engine.is_admin() and not engine.has_elevate_task():
