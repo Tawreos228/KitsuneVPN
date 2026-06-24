@@ -125,6 +125,11 @@ class Backend(QObject):
         self._ping = 0
         self._down = 0.0                       # MB за сессию (мок)
         self._up = 0.0
+        self._traffic_hist_down: deque = deque(maxlen=84)  # rolling history MB/s per tick для графика
+        self._traffic_hist_up: deque = deque(maxlen=84)
+        for _ in range(84):
+            self._traffic_hist_down.append(0.0)
+            self._traffic_hist_up.append(0.0)
         self._elapsed = 0                      # секунды
         self._exit_ip = ""                     # внешний IP (мок)
         self._verify_status = "idle"           # idle | checking | match | mismatch | off | error
@@ -302,6 +307,9 @@ class Backend(QObject):
             "switched":          "Переключено · {name}",
             "reconnectingto":    "Переподключение к · {name}",
             "bestserver":        "Лучший сервер: {name} · {ping} ms",
+            "bestserver_full":   "Лучший сервер: {name} · {ping} ms · {speed} MB/s",
+            "log_copied":        "Лог скопирован в буфер обмена",
+            "log_saved":         "Лог сохранён: {path}",
             "demoerror":         "Не удалось установить соединение · таймаут рукопожатия",
             "mode.tunneedadmin": "Режим · TUN (при подключении запросит права администратора)",
             "mode.proxy":        "Режим · Прокси",
@@ -368,6 +376,9 @@ class Backend(QObject):
             "switched":          "Switched · {name}",
             "reconnectingto":    "Reconnecting to · {name}",
             "bestserver":        "Best server: {name} · {ping} ms",
+            "bestserver_full":   "Best server: {name} · {ping} ms · {speed} MB/s",
+            "log_copied":        "Log copied to clipboard",
+            "log_saved":         "Log saved: {path}",
             "demoerror":         "Connection failed · handshake timeout",
             "mode.tunneedadmin": "Mode · TUN (will request admin on connect)",
             "mode.proxy":        "Mode · Proxy",
@@ -475,6 +486,14 @@ class Backend(QObject):
 
     exitIp = Property(str, _get_exit_ip, notify=statsChanged)
 
+    def _get_hist_down(self) -> list:
+        return list(self._traffic_hist_down)
+    def _get_hist_up(self) -> list:
+        return list(self._traffic_hist_up)
+
+    trafficHistDown = Property("QVariantList", _get_hist_down, notify=statsChanged)
+    trafficHistUp   = Property("QVariantList", _get_hist_up,   notify=statsChanged)
+
     def _get_mode(self) -> str:
         return self._mode
 
@@ -578,6 +597,7 @@ class Backend(QObject):
             "strictRoute": s.get("setStrictRoute", True),
             "mtu": s.get("mtu"),
             "lan": s.get("setLan", False),
+            "autoFailover": s.get("setAutoFailover", False),
         }
 
     def _effective_port(self) -> int:
@@ -817,16 +837,47 @@ class Backend(QObject):
 
     @Slot()
     def selectBest(self) -> None:
+        """Multi-criteria best-server picker:
+          - валидные сервера (_valid != False) с реальным ping (>0)
+          - если есть свежий (≤7 дней) speedMbps замер → effective_score = ping − speedMbps*10
+          - иначе → effective_score = ping + 20 (штраф за отсутствие данных о скорости)
+          - tie-breaker: меньшее ping
+        Результат: 5 MB/s + 80 ping выигрывает у 0 MB/s + 30 ping; измеренный сервер
+        выигрывает у непомеренного при равном ping."""
         servers = self._cur()["servers"]
         if not servers:
             return
-        best = min(servers, key=lambda s: s.get("ping", 9999))
+        now = time.time()
+        FRESH = 7 * 24 * 3600
+        candidates = [s for s in servers
+                      if s.get("_valid", True) and (s.get("ping") or 0) > 0]
+        if not candidates:
+            return
+
+        def score(s: dict) -> tuple[float, int]:
+            ping = int(s.get("ping") or 9999)
+            speed = float(s.get("speedMbps") or 0)
+            age = now - float(s.get("speedAt") or 0)
+            if speed > 0 and age <= FRESH:
+                eff = ping - speed * 10.0
+            else:
+                eff = ping + 20.0
+            return (eff, ping)
+
+        best = min(candidates, key=score)
         self._server = best["country"] + " · " + best["city"]
         self.serverChanged.emit()
         if self._status == "connected":
             self._ping = best["ping"]
             self.statsChanged.emit()
-        self.notify.emit(self._tr("bestserver", name=self._server, ping=best['ping']), "success")
+        # Локализованное уведомление: показываем как ping, так и speed (если был)
+        speed = float(best.get("speedMbps") or 0)
+        age_days = (now - float(best.get("speedAt") or 0)) / 86400 if best.get("speedAt") else 999
+        if speed > 0 and age_days <= 7:
+            self.notify.emit(self._tr("bestserver_full", name=self._server,
+                                       ping=best['ping'], speed=round(speed, 1)), "success")
+        else:
+            self.notify.emit(self._tr("bestserver", name=self._server, ping=best['ping']), "success")
         self._save_state()
 
     @Slot()
@@ -984,8 +1035,8 @@ class Backend(QObject):
             self._verify_status = "off"          # не подключались — это наш реальный IP, VPN не активен
         else:
             actual = (info.get("country_code") or "").upper()
-            if actual and expected:
-                self._verify_status = "match" if actual == expected else "mismatch"
+            if actual and expected_code:
+                self._verify_status = "match" if actual == expected_code else "mismatch"
             else:
                 self._verify_status = "match"     # данных для сравнения нет — не паникуем
         self.verifyChanged.emit()
@@ -1134,12 +1185,44 @@ class Backend(QObject):
     def _get_logs_text(self) -> str:
         return "\n".join(self._log_buf)
 
+    def _get_log_lines(self) -> list:
+        return list(self._log_buf)
+
     logsText = Property(str, _get_logs_text, notify=logsChanged)
+    logLines = Property("QVariantList", _get_log_lines, notify=logsChanged)
 
     @Slot()
     def clearLogs(self) -> None:
         self._log_buf.clear()
         self.logsChanged.emit()
+
+    @Slot()
+    def copyLogs(self) -> None:
+        """Копирует весь буфер логов в clipboard + показывает notify. Удобно для отправки
+        в TG-канал поддержки одним движением (вместо select-all → ctrl-c)."""
+        try:
+            from PySide6.QtGui import QGuiApplication
+            cb = QGuiApplication.clipboard()
+            if cb is not None:
+                cb.setText(self._get_logs_text())
+                self.notify.emit(self._tr("log_copied"), "success")
+        except Exception:
+            pass
+
+    @Slot(result=str)
+    def exportLogs(self) -> str:
+        """Сохраняет лог в файл в Downloads. Возвращает абсолютный путь или пустую строку."""
+        try:
+            from pathlib import Path
+            d = Path.home() / "Downloads"
+            d.mkdir(parents=True, exist_ok=True)
+            ts = time.strftime("%Y%m%d_%H%M%S")
+            p = d / f"kitsune_log_{ts}.txt"
+            p.write_text(self._get_logs_text(), encoding="utf-8")
+            self.notify.emit(self._tr("log_saved", path=str(p)), "success")
+            return str(p)
+        except Exception:
+            return ""
 
     # ---- авто-обновление ядра sing-box ----
     def _get_core_version(self) -> str: return self._core_version
@@ -1578,18 +1661,30 @@ class Backend(QObject):
             valid_servers: list = []
             invalid = 0
             if text:
-                links = self._decode_subscription(text)
-                for l in links:
-                    d = self._parse_link(l)
-                    if not d:
-                        continue
-                    srv = self._make_server(d)
-                    ok, _err = self._validate_server(srv)
-                    srv["_valid"] = ok           # кэш — потом _valid_servers_of_group берёт мгновенно
-                    if ok:
-                        valid_servers.append(srv)
-                    else:
-                        invalid += 1
+                # Clash/Mihomo YAML: ветвимся ДО base64-decode, иначе _decode_subscription
+                # съест yaml как plain-text и вытянет 0 ссылок (YAML не содержит '://').
+                if re.search(r'(?m)^\s*proxies\s*:', text):
+                    for d in engine.parse_clash_proxies(text):
+                        srv = self._make_server(d)
+                        ok, _err = self._validate_server(srv)
+                        srv["_valid"] = ok
+                        if ok:
+                            valid_servers.append(srv)
+                        else:
+                            invalid += 1
+                else:
+                    links = self._decode_subscription(text)
+                    for l in links:
+                        d = self._parse_link(l)
+                        if not d:
+                            continue
+                        srv = self._make_server(d)
+                        ok, _err = self._validate_server(srv)
+                        srv["_valid"] = ok           # кэш — потом _valid_servers_of_group берёт мгновенно
+                        if ok:
+                            valid_servers.append(srv)
+                        else:
+                            invalid += 1
             profile_int = engine.parse_profile_update_interval(headers)
             self._subDone.emit(gi, valid_servers, text is not None, invalid, profile_int)
 
@@ -1728,7 +1823,9 @@ class Backend(QObject):
                      # TUIC-only:
                      "congestion", "udpRelayMode", "zeroRtt", "insecure", "disableSni",
                      # Hysteria 2-only:
-                     "obfsType", "obfsPassword", "upMbps", "downMbps", "ports", "pinSHA256"]
+                     "obfsType", "obfsPassword", "upMbps", "downMbps", "ports", "pinSHA256",
+                     # Shadowsocks plugin (из clash-yaml подписок):
+                     "ssPlugin", "ssPluginOpts"]
 
     def _make_server(self, data: dict, keep_ping=None) -> dict:
         name = (data.get("name") or "").strip() or (data.get("address") or "Сервер")
@@ -2246,6 +2343,12 @@ class Backend(QObject):
         self._tick_n = 0
         self._base_down = 0           # базовые накопительные байты ядра на момент connect
         self._base_up = 0
+        # сбрасываем rolling-history графика — старые значения от прошлой сессии не нужны
+        self._traffic_hist_down.clear()
+        self._traffic_hist_up.clear()
+        for _ in range(84):
+            self._traffic_hist_down.append(0.0)
+            self._traffic_hist_up.append(0.0)
         t = engine.clash_traffic()
         if t:
             self._base_down, self._base_up = t
@@ -2282,11 +2385,15 @@ class Backend(QObject):
         if not engine.port_listening(self._effective_port()):
             self._handle_unexpected_drop()
             return
+        prev_down, prev_up = self._down, self._up
         # реальный трафик за сессию из Clash API (накопительно, МБ)
         t = engine.clash_traffic()
         if t:
             self._down = max(0, t[0] - self._base_down) / 1048576.0
             self._up = max(0, t[1] - self._base_up) / 1048576.0
+        # delta MB за тик (≈ MB/s) для rolling-chart истории
+        self._traffic_hist_down.append(max(0.0, self._down - prev_down))
+        self._traffic_hist_up.append(max(0.0, self._up - prev_up))
         # активный пинг (URL-delay) — раз в 5 c, чтобы не частить
         if self._tick_n % 5 == 0:
             self._refresh_active_ping()
@@ -2668,9 +2775,17 @@ def main() -> int:
         "--elevated" not in sys.argv
         and "--no-elevate" not in sys.argv
         and not engine.is_admin()
-        and _try_silent_elevate()
     ):
-        return 0
+        # Самоисцеление stale-task. Если задача указывает на другой exe (например python.exe
+        # после dev-запуска перед установкой собранного Kitsune.exe), запуск её привёл бы к
+        # параллельным процессам. Удаляем — _try_silent_elevate упадёт в ShellExecute UAC,
+        # elevated child пересоздаст задачу с правильным sys.executable.
+        if engine.has_elevate_task():
+            existing = engine.elevate_task_command()
+            if existing and os.path.normcase(existing) != os.path.normcase(sys.executable):
+                engine.uninstall_elevate_task()
+        if _try_silent_elevate():
+            return 0
 
     app = QApplication(sys.argv)
     app.setApplicationName("Kitsune")

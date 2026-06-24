@@ -43,7 +43,7 @@ _GH_NEKORAY_API = "https://api.github.com/repos/MatsuriDayo/nekoray/releases/lat
 _GH_KITSUNE_API = "https://api.github.com/repos/Tawreos228/KitsuneVPN/releases/latest"
 
 # Версия приложения — синхронизировать с installer.iss MyAppVersion перед каждым релизом.
-APP_VERSION = "0.2.2"
+APP_VERSION = "0.3.0"
 
 # базы для bundled-подобных rule-set'ов (тянутся ядром по требованию)
 _GEOSITE_URL = "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-{}.srs"
@@ -155,6 +155,12 @@ def build_outbound(s: dict) -> dict:
     elif proto == "shadowsocks":
         ob = {"type": "shadowsocks", **base,
               "method": s.get("method") or "aes-256-gcm", "password": s.get("password", "")}
+        # SOLT plugins из clash подписок: obfs-local / v2ray-plugin / shadow-tls.
+        # sing-box принимает их через поля plugin + plugin_opts (query-string).
+        if s.get("ssPlugin"):
+            ob["plugin"] = s["ssPlugin"]
+            if s.get("ssPluginOpts"):
+                ob["plugin_opts"] = s["ssPluginOpts"]
     elif proto == "tuic":
         # TUIC v5 — поверх QUIC. uuid + password = креды; congestion_control + udp_relay_mode
         # — performance-параметры; ALPN обязателен и должен совпадать с сервером.
@@ -544,12 +550,25 @@ def gen_config(server, settings: dict | None = None,
         except (TypeError, ValueError):
             active_idx = 0
         active_idx = max(0, min(active_idx, len(member_tags) - 1))
-        outbounds.append({
-            "type": "selector",
-            "tag": PROXY_TAG,
-            "outbounds": member_tags,
-            "default": member_tags[active_idx],
-        })
+        # Auto-failover (urltest) vs ручной selector. Urltest периодически тестит каждый
+        # сервер на URL-delay и переключается автоматически — полезно если сервера падают.
+        if settings.get("autoFailover"):
+            outbounds.append({
+                "type": "urltest",
+                "tag": PROXY_TAG,
+                "outbounds": member_tags,
+                "url": "https://www.gstatic.com/generate_204",   # cheap 204 endpoint
+                "interval": "3m",
+                "tolerance": 50,        # ms: переключаемся только если новый сервер на 50ms быстрее
+                "idle_timeout": "30m",  # бездействующие тесты тормозим
+            })
+        else:
+            outbounds.append({
+                "type": "selector",
+                "tag": PROXY_TAG,
+                "outbounds": member_tags,
+                "default": member_tags[active_idx],
+            })
 
     # listen: 0.0.0.0 разрешает подключения к нашему mixed-прокси из LAN; 127.0.0.1 — только локально
     listen_addr = "0.0.0.0" if settings.get("lan") else "127.0.0.1"
@@ -895,6 +914,287 @@ def parse_clash_rules(text: str) -> list[dict]:
     return out
 
 
+def _clash_alpn(v) -> list[str] | None:
+    """Mihomo alpn: list или comma-string → list[str] или None."""
+    if isinstance(v, list):
+        out = [str(x).strip() for x in v if x is not None]
+        return [x for x in out if x] or None
+    if isinstance(v, str):
+        out = [a.strip() for a in v.split(",") if a.strip()]
+        return out or None
+    return None
+
+
+def _clash_network(p: dict) -> str:
+    """Mihomo network → наш transport. tcp default. h2 → tcp (наш _transport_block
+    не делает h2 как самостоятельный transport, sing-box лечит через tls.alpn)."""
+    n = (p.get("network") or "tcp").lower()
+    if n == "h2":
+        return "tcp"
+    if n in ("tcp", "ws", "grpc", "xhttp", "httpupgrade"):
+        return n
+    return "tcp"
+
+
+def _clash_proxy_to_kitsune(p: dict) -> dict | None:
+    """Один Mihomo proxy-dict → наш server-dict. None если тип не поддерживаем (ssr/snell/
+    socks5/http) или нет обязательных полей (server/port)."""
+    if not isinstance(p, dict):
+        return None
+    t = (p.get("type") or "").lower()
+    addr = str(p.get("server") or "").strip()
+    try:
+        port = int(p.get("port") or 0)
+    except (TypeError, ValueError):
+        port = 0
+    name = str(p.get("name") or "").strip()
+    if not addr:
+        return None
+
+    # WireGuard может прятать сервер в peers[0]; обработаем ниже
+    if t != "wireguard" and port <= 0:
+        return None
+
+    base = {"name": name or addr, "address": addr, "port": port}
+
+    if t == "vless":
+        d = {**base, "protocol": "vless",
+             "uuid": str(p.get("uuid") or ""),
+             "flow": str(p.get("flow") or ""),
+             "tls": bool(p.get("tls")),
+             "sni": str(p.get("servername") or ""),
+             "fp": str(p.get("client-fingerprint") or p.get("fingerprint") or ""),
+             "transport": _clash_network(p)}
+        alpn = _clash_alpn(p.get("alpn"))
+        if alpn:
+            d["alpn"] = ",".join(alpn)
+        r = p.get("reality-opts") or {}
+        if isinstance(r, dict):
+            if r.get("public-key"): d["pbk"] = str(r["public-key"])
+            if r.get("short-id"):   d["sid"] = str(r["short-id"])
+        ws = p.get("ws-opts") or {}
+        if isinstance(ws, dict):
+            if ws.get("path"): d["path"] = str(ws["path"])
+            headers = ws.get("headers") or {}
+            if isinstance(headers, dict):
+                h = headers.get("Host") or headers.get("host")
+                if h: d["host"] = str(h)
+        grpc = p.get("grpc-opts") or {}
+        if isinstance(grpc, dict) and grpc.get("grpc-service-name"):
+            d["serviceName"] = str(grpc["grpc-service-name"])
+        h2 = p.get("h2-opts") or {}
+        if isinstance(h2, dict):
+            if h2.get("path"): d["path"] = str(h2["path"])
+            hosts = h2.get("host") or []
+            if isinstance(hosts, list) and hosts:
+                d["host"] = str(hosts[0])
+        if p.get("skip-cert-verify"):
+            d["insecure"] = True
+        return d
+
+    if t == "vmess":
+        d = {**base, "protocol": "vmess",
+             "uuid": str(p.get("uuid") or ""),
+             "alterId": int(p.get("alterId") or 0),
+             "vmessSecurity": str(p.get("cipher") or "auto"),
+             "tls": bool(p.get("tls")),
+             "sni": str(p.get("servername") or ""),
+             "fp": str(p.get("client-fingerprint") or ""),
+             "transport": _clash_network(p)}
+        alpn = _clash_alpn(p.get("alpn"))
+        if alpn:
+            d["alpn"] = ",".join(alpn)
+        ws = p.get("ws-opts") or {}
+        if isinstance(ws, dict):
+            if ws.get("path"): d["path"] = str(ws["path"])
+            headers = ws.get("headers") or {}
+            if isinstance(headers, dict):
+                h = headers.get("Host") or headers.get("host")
+                if h: d["host"] = str(h)
+        grpc = p.get("grpc-opts") or {}
+        if isinstance(grpc, dict) and grpc.get("grpc-service-name"):
+            d["serviceName"] = str(grpc["grpc-service-name"])
+        h2 = p.get("h2-opts") or {}
+        if isinstance(h2, dict):
+            if h2.get("path"): d["path"] = str(h2["path"])
+            hosts = h2.get("host") or []
+            if isinstance(hosts, list) and hosts:
+                d["host"] = str(hosts[0])
+        return d
+
+    if t == "trojan":
+        d = {**base, "protocol": "trojan",
+             "password": str(p.get("password") or ""),
+             "sni": str(p.get("sni") or ""),
+             "tls": True,
+             "fp": str(p.get("client-fingerprint") or p.get("fingerprint") or ""),
+             "transport": _clash_network(p)}
+        alpn = _clash_alpn(p.get("alpn"))
+        if alpn:
+            d["alpn"] = ",".join(alpn)
+        ws = p.get("ws-opts") or {}
+        if isinstance(ws, dict):
+            if ws.get("path"): d["path"] = str(ws["path"])
+            headers = ws.get("headers") or {}
+            if isinstance(headers, dict):
+                h = headers.get("Host") or headers.get("host")
+                if h: d["host"] = str(h)
+        grpc = p.get("grpc-opts") or {}
+        if isinstance(grpc, dict) and grpc.get("grpc-service-name"):
+            d["serviceName"] = str(grpc["grpc-service-name"])
+        r = p.get("reality-opts") or {}
+        if isinstance(r, dict):
+            if r.get("public-key"): d["pbk"] = str(r["public-key"])
+            if r.get("short-id"):   d["sid"] = str(r["short-id"])
+        if p.get("skip-cert-verify"):
+            d["insecure"] = True
+        return d
+
+    if t in ("ss", "shadowsocks"):
+        d = {**base, "protocol": "shadowsocks",
+             "method": str(p.get("cipher") or "aes-256-gcm"),
+             "password": str(p.get("password") or "")}
+        plugin = (p.get("plugin") or "").lower()
+        po = p.get("plugin-opts") or {}
+        if not isinstance(po, dict):
+            po = {}
+        if plugin == "obfs":
+            d["ssPlugin"] = "obfs-local"
+            mode = po.get("mode") or "tls"
+            opts = [f"obfs={mode}"]
+            if po.get("host"): opts.append(f"obfs-host={po['host']}")
+            d["ssPluginOpts"] = ";".join(opts)
+        elif plugin == "v2ray-plugin":
+            d["ssPlugin"] = "v2ray-plugin"
+            opts = [f"mode={po.get('mode') or 'websocket'}",
+                    f"path={po.get('path') or '/'}"]
+            if po.get("host"): opts.append(f"host={po['host']}")
+            if po.get("tls"):  opts.append("tls")
+            d["ssPluginOpts"] = ";".join(opts)
+        elif plugin == "shadow-tls":
+            # shadow-tls в sing-box не plugin, а отдельный shadowtls outbound с detour-pair'ом.
+            # Полноценная поддержка требует генерации двух outbound'ов (shadowtls→shadowsocks)
+            # и не вписывается в наш одно-outbound профиль. Пропускаем сервер.
+            return None
+        elif plugin:
+            # kcptun / gost-plugin / restls — sing-box не маппит; пропускаем сервер
+            return None
+        return d
+
+    if t == "hysteria2":
+        d = {**base, "protocol": "hysteria2",
+             "password": str(p.get("password") or ""),
+             "sni": str(p.get("sni") or ""),
+             "tls": True}
+        alpn = _clash_alpn(p.get("alpn"))
+        if alpn:
+            d["alpn"] = ",".join(alpn)
+        ports = p.get("ports")
+        if isinstance(ports, str) and ports.strip():
+            # mihomo формат: "443,8443,1000-2000" — sing-box server_ports принимает
+            # list of strings, каждая строка = одиночный порт ИЛИ диапазон "start:end".
+            # Разбиваем по запятой; "a-b" нормализуем в "a:b" (sing-box принимает ':').
+            items = []
+            for chunk in ports.split(","):
+                c = chunk.strip()
+                if not c: continue
+                if "-" in c and not c.startswith("-"):
+                    a, _, b = c.partition("-")
+                    items.append(f"{a.strip()}:{b.strip()}")
+                else:
+                    # одиночный порт sing-box ждёт как "p:p"
+                    items.append(f"{c}:{c}")
+            if items:
+                d["ports"] = items
+        if p.get("obfs"):           d["obfsType"]     = str(p["obfs"])
+        if p.get("obfs-password"):  d["obfsPassword"] = str(p["obfs-password"])
+        for src, dst in (("up", "upMbps"), ("down", "downMbps")):
+            v = p.get(src)
+            if v is not None:
+                try: d[dst] = int(float(str(v).split()[0]))
+                except (TypeError, ValueError): pass
+        if p.get("skip-cert-verify"):
+            d["insecure"] = True
+        return d
+
+    if t == "tuic":
+        d = {**base, "protocol": "tuic",
+             "uuid": str(p.get("uuid") or ""),
+             "password": str(p.get("password") or ""),
+             "sni": str(p.get("sni") or ""),
+             "tls": True}
+        if p.get("congestion-controller"): d["congestion"]   = str(p["congestion-controller"])
+        if p.get("udp-relay-mode"):        d["udpRelayMode"] = str(p["udp-relay-mode"])
+        if p.get("reduce-rtt"):            d["zeroRtt"]      = True
+        if p.get("disable-sni"):           d["disableSni"]   = True
+        alpn = _clash_alpn(p.get("alpn"))
+        if alpn:
+            d["alpn"] = ",".join(alpn)
+        if p.get("skip-cert-verify"):
+            d["insecure"] = True
+        return d
+
+    if t == "wireguard":
+        peers = p.get("peers") if isinstance(p.get("peers"), list) else []
+        if peers:
+            peer = peers[0]
+            paddr = str(peer.get("server") or addr).strip()
+            try:
+                pport = int(peer.get("port") or port or 0)
+            except (TypeError, ValueError):
+                pport = port
+        else:
+            # legacy single-peer форма (поля прямо в proxy)
+            peer = p
+            paddr = addr
+            pport = port
+        if not paddr or pport <= 0 or not peer.get("public-key"):
+            return None
+        d = {"name": name or paddr, "address": paddr, "port": pport,
+             "protocol": "wireguard",
+             "wgKey":   str(p.get("private-key") or ""),
+             "peerKey": str(peer.get("public-key") or ""),
+             "psk":     str(peer.get("pre-shared-key") or ""),
+             "localAddr": str(p.get("ip") or "")}
+        if p.get("mtu"):
+            try: d["mtu"] = int(p["mtu"])
+            except (TypeError, ValueError): pass
+        allowed = peer.get("allowed-ips")
+        if isinstance(allowed, list):
+            d["allowedIps"] = [str(a) for a in allowed if a]
+        elif isinstance(allowed, str):
+            d["allowedIps"] = [a.strip() for a in allowed.split(",") if a.strip()]
+        return d
+
+    # ssr / snell / socks5 / http / vmess-aead-variants — пропускаем
+    return None
+
+
+def parse_clash_proxies(text: str) -> list[dict]:
+    """Mihomo/Clash YAML с секцией `proxies:` → список наших server-dict'ов.
+    Использует PyYAML. Если он недоступен — пустой список (graceful degrade).
+    Неподдержанные типы тихо пропускаются."""
+    try:
+        import yaml
+    except ImportError:
+        return []
+    try:
+        cfg = yaml.safe_load(text)
+    except Exception:
+        return []
+    if not isinstance(cfg, dict):
+        return []
+    proxies = cfg.get("proxies")
+    if not isinstance(proxies, list):
+        return []
+    out: list[dict] = []
+    for p in proxies:
+        d = _clash_proxy_to_kitsune(p)
+        if d:
+            out.append(d)
+    return out
+
+
 def parse_imported_rules(text: str) -> dict:
     """Авто-детект формата → парсинг. Возвращает {format, rules, count}.
     format ∈ {'singbox', 'clash', 'unknown'}."""
@@ -1028,6 +1328,33 @@ def _schtasks(*args: str) -> int:
 def has_elevate_task() -> bool:
     """True если задача Kitsune\\AutoElevate уже зарегистрирована."""
     return _schtasks("/query", "/tn", ELEVATE_TASK_NAME) == 0
+
+
+def elevate_task_command() -> str:
+    """Возвращает <Command> из XML существующей задачи или пустую строку.
+    Нужно чтобы детектить stale-task'и (например указывающие на python.exe + dev path
+    после того как юзер установил собранный Kitsune.exe). XML schtasks отдаёт в UTF-16."""
+    try:
+        r = subprocess.run(
+            ["schtasks", "/query", "/tn", ELEVATE_TASK_NAME, "/xml"],
+            capture_output=True, timeout=10, **_hidden_kwargs())
+    except Exception:
+        return ""
+    if r.returncode != 0:
+        return ""
+    raw = r.stdout
+    # schtasks отдаёт XML в UTF-16-LE с BOM
+    for enc in ("utf-16-le", "utf-16", "utf-8"):
+        try:
+            text = raw.decode(enc, errors="ignore")
+            if "<Command>" in text:
+                break
+        except Exception:
+            continue
+    else:
+        return ""
+    m = re.search(r"<Command>([^<]+)</Command>", text)
+    return m.group(1).strip() if m else ""
 
 
 def install_elevate_task(command: str, arguments: str = "") -> bool:

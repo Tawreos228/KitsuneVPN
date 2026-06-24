@@ -77,6 +77,7 @@ ApplicationWindow {
     property bool setTun: false
     property int  tunStack: 0          // 0 gVisor · 1 system · 2 mixed
     property bool setStrictRoute: false   // ON форсит DNS в туннель (WFP) и ломает резолвинг на части сетей
+    property bool setAutoFailover: false  // urltest outbound — автопереключение между серверами при падении
     property bool setSniff: true
     property bool setFakeIp: true
     property bool setMux: false
@@ -291,7 +292,7 @@ ApplicationWindow {
     function exportSettings() {
         settingsSnapshot = JSON.stringify({
             setAutostart: setAutostart, setReconnect: setReconnect, setKill: setKill,
-            setTray: setTray, setLan: setLan, setStrictRoute: setStrictRoute,
+            setTray: setTray, setLan: setLan, setStrictRoute: setStrictRoute, setAutoFailover: setAutoFailover,
             setSniff: setSniff, setFakeIp: setFakeIp, setMux: setMux, tunStack: tunStack,
             muxProto: muxProto, setAutoConf: setAutoConf,
             setSubAutoRefresh: setSubAutoRefresh, subRefreshInterval: subRefreshInterval,
@@ -314,6 +315,7 @@ ApplicationWindow {
         if (s.setTray !== undefined) setTray = s.setTray
         if (s.setLan !== undefined) setLan = s.setLan
         if (s.setStrictRoute !== undefined) setStrictRoute = s.setStrictRoute
+        if (s.setAutoFailover !== undefined) setAutoFailover = !!s.setAutoFailover
         if (s.setSniff !== undefined) setSniff = s.setSniff
         if (s.setFakeIp !== undefined) setFakeIp = s.setFakeIp
         if (s.setMux !== undefined) setMux = s.setMux
@@ -1166,7 +1168,7 @@ ApplicationWindow {
                             Layout.alignment: Qt.AlignVCenter
                             implicitWidth: 40; implicitHeight: 24
                             checked: subInfo.g.auto || false
-                            onToggled: backend.setGroupAuto(backend.currentGroup, value)
+                            onToggled: function(value) { backend.setGroupAuto(backend.currentGroup, value) }
                         }
                         IconButton { Layout.alignment: Qt.AlignVCenter; glyph: win.icoReconnect; diameter: 34; onClicked: backend.updateGroup(backend.currentGroup) }
                         IconButton { Layout.alignment: Qt.AlignVCenter; glyph: String.fromCharCode(0xE74D); diameter: 34; onClicked: win.askConfirm(T.s("confirm.delsub") + (subInfo.g.name || "") + T.s("confirm.tail"), function() { backend.removeGroup(backend.currentGroup) }) }
@@ -1478,7 +1480,7 @@ ApplicationWindow {
                                 label: T.s("label.lang")
                                 sub: T.lang === "ru" ? T.s("misc.langnames") : T.s("misc.langnames.en")
                                 // язык — это имя самого языка, не переводим
-                                control: Segmented { width: 200; options: [T.s("misc.langname.ru"), T.s("misc.langname.en")]; currentIndex: T.lang === "en" ? 1 : 0; onSelected: T.lang = (index === 1 ? "en" : "ru") }
+                                control: Segmented { width: 200; options: [T.s("misc.langname.ru"), T.s("misc.langname.en")]; currentIndex: T.lang === "en" ? 1 : 0; onSelected: function(index) { T.lang = (index === 1 ? "en" : "ru") } }
                             }
                         }
                     }
@@ -1505,7 +1507,7 @@ ApplicationWindow {
                             SettingRow {
                                 Layout.fillWidth: true
                                 glyph: win.icoTray; label: T.s("set.tray"); sub: T.s("set.tray.sub")
-                                control: Toggle { checked: win.setTray; onToggled: win.setTray = value }
+                                control: Toggle { checked: win.setTray; onToggled: function(value) { win.setTray = value } }
                             }
                         }
                     }
@@ -1561,6 +1563,53 @@ ApplicationWindow {
                                     }
                                     HoverHandler { id: updAppHover; enabled: !backend.appUpdating; cursorShape: Qt.PointingHandCursor }
                                     TapHandler { enabled: !backend.appUpdating; onTapped: backend.updateApp() }
+                                }
+                            }
+                        }
+                    }
+
+                    // === СООБЩЕСТВО (Telegram + GitHub) ===
+                    Text { text: T.s("sec.community"); color: Theme.textMuted; font.family: Theme.fontFamily; font.pixelSize: 11; font.weight: Font.DemiBold; font.letterSpacing: 1; Layout.topMargin: 8 }
+                    Rectangle {
+                        Layout.fillWidth: true; radius: Theme.radius; color: Theme.surface; border.width: 1; border.color: Theme.stroke
+                        implicitHeight: communityCol.implicitHeight
+                        ColumnLayout {
+                            id: communityCol; width: parent.width; spacing: 0
+                            SettingRow {
+                                Layout.fillWidth: true
+                                glyph: String.fromCharCode(0xE8BD)        // ChatBubble — Telegram
+                                label: T.s("set.tg")
+                                sub: T.s("set.tg.sub")
+                                control: Rectangle {
+                                    width: 110; height: 32; radius: 9
+                                    color: openTgHover.hovered ? Theme.accentSoft : "transparent"
+                                    border.width: 1; border.color: Theme.accent
+                                    Text {
+                                        anchors.centerIn: parent; text: T.s("btn.open")
+                                        color: Theme.accent
+                                        font.family: Theme.fontFamily; font.pixelSize: 13; font.weight: Font.DemiBold
+                                    }
+                                    HoverHandler { id: openTgHover; cursorShape: Qt.PointingHandCursor }
+                                    TapHandler { onTapped: backend.openUrl("https://t.me/Kitsune_VPN") }
+                                }
+                            }
+                            Rectangle { Layout.fillWidth: true; Layout.leftMargin: 50; height: 1; color: Theme.stroke }
+                            SettingRow {
+                                Layout.fillWidth: true
+                                glyph: String.fromCharCode(0xE943)        // Code — GitHub
+                                label: T.s("set.github")
+                                sub: T.s("set.github.sub")
+                                control: Rectangle {
+                                    width: 110; height: 32; radius: 9
+                                    color: openGhHover.hovered ? Theme.hover : "transparent"
+                                    border.width: 1; border.color: Theme.stroke
+                                    Text {
+                                        anchors.centerIn: parent; text: T.s("btn.open")
+                                        color: Theme.text
+                                        font.family: Theme.fontFamily; font.pixelSize: 13
+                                    }
+                                    HoverHandler { id: openGhHover; cursorShape: Qt.PointingHandCursor }
+                                    TapHandler { onTapped: backend.openUrl("https://github.com/Tawreos228/KitsuneVPN") }
                                 }
                             }
                         }
@@ -1648,7 +1697,7 @@ ApplicationWindow {
                                 Layout.fillWidth: true
                                 glyph: win.icoLink; label: T.s("set.autoconf")
                                 sub: T.s("set.autoconf.sub")
-                                control: Toggle { checked: win.setAutoConf; onToggled: win.setAutoConf = value }
+                                control: Toggle { checked: win.setAutoConf; onToggled: function(value) { win.setAutoConf = value } }
                             }
                             Rectangle { Layout.fillWidth: true; Layout.leftMargin: 50; height: 1; color: Theme.stroke }
                             SettingRow {
@@ -1658,7 +1707,7 @@ ApplicationWindow {
                                 sub: T.s("set.subautoref.sub")
                                 control: Toggle {
                                     checked: win.setSubAutoRefresh
-                                    onToggled: {
+                                    onToggled: function(value) {
                                         win.setSubAutoRefresh = value
                                         backend.setSubAutoRefresh(value)
                                     }
@@ -1677,7 +1726,7 @@ ApplicationWindow {
                                     currentIndex: win.subRefreshInterval === 3 ? 0
                                                 : win.subRefreshInterval === 6 ? 1
                                                 : win.subRefreshInterval === 24 ? 3 : 2
-                                    onSelected: {
+                                    onSelected: function(index) {
                                         var h = [3, 6, 12, 24][index] || 12
                                         win.subRefreshInterval = h
                                         backend.setSubRefreshInterval(h)
@@ -1705,21 +1754,21 @@ ApplicationWindow {
                                 glyph: win.icoAutostart; label: T.s("set.autostart"); sub: T.s("set.autostart.sub")
                                 control: Toggle {
                                     checked: win.setAutostart
-                                    onToggled: { win.setAutostart = value; backend.setAutostart(value) }
+                                    onToggled: function(value) { win.setAutostart = value; backend.setAutostart(value) }
                                 }
                             }
                             Rectangle { Layout.fillWidth: true; Layout.leftMargin: 50; height: 1; color: Theme.stroke }
                             SettingRow {
                                 Layout.fillWidth: true
                                 glyph: win.icoLink; label: T.s("set.autoconnect"); sub: T.s("set.autoconnect.sub")
-                                control: Toggle { checked: backend.autoConnect; onToggled: backend.autoConnect = value }
+                                control: Toggle { checked: backend.autoConnect; onToggled: function(value) { backend.autoConnect = value } }
                             }
                             Rectangle { visible: backend.autoConnect; Layout.fillWidth: true; Layout.leftMargin: 50; height: 1; color: Theme.stroke }
                             SettingRow {
                                 visible: backend.autoConnect
                                 Layout.fillWidth: true
                                 glyph: win.icoReconnect; label: T.s("set.connectto"); sub: T.s("set.connectto.sub")
-                                control: Segmented { width: 220; options: [T.s("seg.last"), T.s("seg.fastest")]; currentIndex: backend.autoConnectMode; onSelected: backend.autoConnectMode = index }
+                                control: Segmented { width: 220; options: [T.s("seg.last"), T.s("seg.fastest")]; currentIndex: backend.autoConnectMode; onSelected: function(index) { backend.autoConnectMode = index } }
                             }
                             Rectangle { Layout.fillWidth: true; Layout.leftMargin: 50; height: 1; color: Theme.stroke }
                             SettingRow {
@@ -1727,8 +1776,16 @@ ApplicationWindow {
                                 glyph: win.icoReconnect; label: T.s("set.reconnect"); sub: T.s("set.reconnect.sub")
                                 control: Toggle {
                                     checked: win.setReconnect
-                                    onToggled: { win.setReconnect = value; backend.setReconnectEnabled(value) }
+                                    onToggled: function(value) { win.setReconnect = value; backend.setReconnectEnabled(value) }
                                 }
+                            }
+                            Rectangle { Layout.fillWidth: true; Layout.leftMargin: 50; height: 1; color: Theme.stroke }
+                            SettingRow {
+                                Layout.fillWidth: true
+                                glyph: win.icoReconnect
+                                label: T.s("set.failover")
+                                sub: T.s("set.failover.sub")
+                                control: Toggle { checked: win.setAutoFailover; onToggled: function(value) { win.setAutoFailover = value } }
                             }
                         }
                     }
@@ -1743,7 +1800,7 @@ ApplicationWindow {
                             SettingRow {
                                 Layout.fillWidth: true
                                 glyph: String.fromCharCode(0xE765); label: T.s("set.hotkey"); sub: T.s("set.hotkey.sub")
-                                control: Toggle { checked: backend.hotkeyEnabled; onToggled: backend.hotkeyEnabled = value }
+                                control: Toggle { checked: backend.hotkeyEnabled; onToggled: function(value) { backend.hotkeyEnabled = value } }
                             }
                             Rectangle { Layout.fillWidth: true; Layout.leftMargin: 50; height: 1; color: Theme.stroke }
                             SettingRow {
@@ -1773,7 +1830,7 @@ ApplicationWindow {
                                 sub: T.s("set.killswitch.sub")
                                 control: Toggle {
                                     checked: win.setKill
-                                    onToggled: { win.setKill = value; backend.setKillSwitchEnabled(value) }
+                                    onToggled: function(value) { win.setKill = value; backend.setKillSwitchEnabled(value) }
                                 }
                             }
                         }
@@ -1786,11 +1843,11 @@ ApplicationWindow {
                         implicitHeight: inCol.implicitHeight
                         ColumnLayout {
                             id: inCol; width: parent.width; spacing: 0
-                            SettingRow { Layout.fillWidth: true; glyph: win.icoPort; label: T.s("set.port"); sub: T.s("set.port.sub"); control: ValueField { fieldWidth: 90; numeric: true; text: win.portMixed; onEdited: win.portMixed = value } }
+                            SettingRow { Layout.fillWidth: true; glyph: win.icoPort; label: T.s("set.port"); sub: T.s("set.port.sub"); control: ValueField { fieldWidth: 90; numeric: true; text: win.portMixed; onEdited: function(value) { win.portMixed = value } } }
                             Rectangle { Layout.fillWidth: true; Layout.leftMargin: 50; height: 1; color: Theme.stroke }
-                            SettingRow { Layout.fillWidth: true; glyph: win.icoLink; label: T.s("set.lan"); sub: T.s("set.lan.sub"); control: Toggle { checked: win.setLan; onToggled: win.setLan = value } }
+                            SettingRow { Layout.fillWidth: true; glyph: win.icoLink; label: T.s("set.lan"); sub: T.s("set.lan.sub"); control: Toggle { checked: win.setLan; onToggled: function(value) { win.setLan = value } } }
                             Rectangle { Layout.fillWidth: true; Layout.leftMargin: 50; height: 1; color: Theme.stroke }
-                            SettingRow { Layout.fillWidth: true; glyph: win.icoSniff; label: T.s("set.sniff"); sub: T.s("set.sniff.sub"); control: Toggle { checked: win.setSniff; onToggled: win.setSniff = value } }
+                            SettingRow { Layout.fillWidth: true; glyph: win.icoSniff; label: T.s("set.sniff"); sub: T.s("set.sniff.sub"); control: Toggle { checked: win.setSniff; onToggled: function(value) { win.setSniff = value } } }
                         }
                     }
 
@@ -1801,13 +1858,13 @@ ApplicationWindow {
                         implicitHeight: tunCol.implicitHeight
                         ColumnLayout {
                             id: tunCol; width: parent.width; spacing: 0
-                            SettingRow { Layout.fillWidth: true; glyph: win.icoTun; label: T.s("set.tunmode"); sub: T.s("set.tunmode.sub"); control: Toggle { checked: backend.mode === "tun"; onToggled: backend.setMode(value ? "tun" : "proxy") } }
+                            SettingRow { Layout.fillWidth: true; glyph: win.icoTun; label: T.s("set.tunmode"); sub: T.s("set.tunmode.sub"); control: Toggle { checked: backend.mode === "tun"; onToggled: function(value) { backend.setMode(value ? "tun" : "proxy") } } }
                             Rectangle { Layout.fillWidth: true; Layout.leftMargin: 50; height: 1; color: Theme.stroke }
-                            SettingRow { Layout.fillWidth: true; glyph: win.icoTun; label: T.s("set.tunstack"); control: Segmented { width: 210; options: ["gVisor", "system", "mixed"]; currentIndex: win.tunStack; onSelected: win.tunStack = index } }
+                            SettingRow { Layout.fillWidth: true; glyph: win.icoTun; label: T.s("set.tunstack"); control: Segmented { width: 210; options: ["gVisor", "system", "mixed"]; currentIndex: win.tunStack; onSelected: function(index) { win.tunStack = index } } }
                             Rectangle { Layout.fillWidth: true; Layout.leftMargin: 50; height: 1; color: Theme.stroke }
-                            SettingRow { Layout.fillWidth: true; glyph: win.icoPort; label: "MTU"; control: ValueField { fieldWidth: 90; numeric: true; text: win.mtu; onEdited: win.mtu = value } }
+                            SettingRow { Layout.fillWidth: true; glyph: win.icoPort; label: "MTU"; control: ValueField { fieldWidth: 90; numeric: true; text: win.mtu; onEdited: function(value) { win.mtu = value } } }
                             Rectangle { Layout.fillWidth: true; Layout.leftMargin: 50; height: 1; color: Theme.stroke }
-                            SettingRow { Layout.fillWidth: true; glyph: win.icoShield; label: T.s("set.strict"); sub: T.s("set.strict.sub"); control: Toggle { checked: win.setStrictRoute; onToggled: win.setStrictRoute = value } }
+                            SettingRow { Layout.fillWidth: true; glyph: win.icoShield; label: T.s("set.strict"); sub: T.s("set.strict.sub"); control: Toggle { checked: win.setStrictRoute; onToggled: function(value) { win.setStrictRoute = value } } }
                         }
                     }
 
@@ -1818,11 +1875,11 @@ ApplicationWindow {
                         implicitHeight: dnsCol.implicitHeight
                         ColumnLayout {
                             id: dnsCol; width: parent.width; spacing: 0
-                            SettingRow { Layout.fillWidth: true; glyph: win.icoDns; label: T.s("set.dnsremote"); sub: T.s("set.dnsremote.sub"); control: ValueField { fieldWidth: 220; text: win.dnsRemote; onEdited: win.dnsRemote = value } }
+                            SettingRow { Layout.fillWidth: true; glyph: win.icoDns; label: T.s("set.dnsremote"); sub: T.s("set.dnsremote.sub"); control: ValueField { fieldWidth: 220; text: win.dnsRemote; onEdited: function(value) { win.dnsRemote = value } } }
                             Rectangle { Layout.fillWidth: true; Layout.leftMargin: 50; height: 1; color: Theme.stroke }
-                            SettingRow { Layout.fillWidth: true; glyph: win.icoDns; label: T.s("set.dnsdirect"); sub: T.s("set.dnsdirect.sub"); control: ValueField { fieldWidth: 140; text: win.dnsDirect; onEdited: win.dnsDirect = value } }
+                            SettingRow { Layout.fillWidth: true; glyph: win.icoDns; label: T.s("set.dnsdirect"); sub: T.s("set.dnsdirect.sub"); control: ValueField { fieldWidth: 140; text: win.dnsDirect; onEdited: function(value) { win.dnsDirect = value } } }
                             Rectangle { Layout.fillWidth: true; Layout.leftMargin: 50; height: 1; color: Theme.stroke }
-                            SettingRow { Layout.fillWidth: true; glyph: win.icoShield; label: T.s("set.fakeip"); sub: T.s("set.fakeip.sub"); control: Toggle { checked: win.setFakeIp; onToggled: win.setFakeIp = value } }
+                            SettingRow { Layout.fillWidth: true; glyph: win.icoShield; label: T.s("set.fakeip"); sub: T.s("set.fakeip.sub"); control: Toggle { checked: win.setFakeIp; onToggled: function(value) { win.setFakeIp = value } } }
                         }
                     }
 
@@ -1833,9 +1890,9 @@ ApplicationWindow {
                         implicitHeight: muxCol.implicitHeight
                         ColumnLayout {
                             id: muxCol; width: parent.width; spacing: 0
-                            SettingRow { Layout.fillWidth: true; glyph: win.icoMux; label: T.s("set.mux"); sub: T.s("set.mux.sub"); control: Toggle { checked: win.setMux; onToggled: win.setMux = value } }
+                            SettingRow { Layout.fillWidth: true; glyph: win.icoMux; label: T.s("set.mux"); sub: T.s("set.mux.sub"); control: Toggle { checked: win.setMux; onToggled: function(value) { win.setMux = value } } }
                             Rectangle { Layout.fillWidth: true; Layout.leftMargin: 50; height: 1; color: Theme.stroke }
-                            SettingRow { Layout.fillWidth: true; glyph: win.icoMux; label: T.s("set.muxproto"); control: Segmented { width: 210; options: ["smux", "yamux", "h2mux"]; currentIndex: win.muxProto; onSelected: win.muxProto = index } }
+                            SettingRow { Layout.fillWidth: true; glyph: win.icoMux; label: T.s("set.muxproto"); control: Segmented { width: 210; options: ["smux", "yamux", "h2mux"]; currentIndex: win.muxProto; onSelected: function(index) { win.muxProto = index } } }
                         }
                     }
 
@@ -1975,13 +2032,13 @@ ApplicationWindow {
                             SettingRow {
                                 Layout.fillWidth: true
                                 glyph: win.icoRouting; label: T.s("set.routeprofile")
-                                control: Segmented { width: 210; options: [T.s("seg.auto"), T.s("seg.global"), T.s("seg.ru")]; currentIndex: win.rtProfile; onSelected: win.rtProfile = index }
+                                control: Segmented { width: 210; options: [T.s("seg.auto"), T.s("seg.global"), T.s("seg.ru")]; currentIndex: win.rtProfile; onSelected: function(index) { win.rtProfile = index } }
                             }
                             Rectangle { Layout.fillWidth: true; Layout.leftMargin: 50; height: 1; color: Theme.stroke }
                             SettingRow {
                                 Layout.fillWidth: true
                                 glyph: win.icoShield; label: T.s("set.routefinal"); sub: T.s("set.routefinal.sub")
-                                control: Segmented { width: 230; options: [T.s("seg.proxy"), T.s("seg.direct"), T.s("seg.block")]; currentIndex: win.rtFinal; onSelected: win.rtFinal = index }
+                                control: Segmented { width: 230; options: [T.s("seg.proxy"), T.s("seg.direct"), T.s("seg.block")]; currentIndex: win.rtFinal; onSelected: function(index) { win.rtFinal = index } }
                             }
                         }
                     }
@@ -1994,13 +2051,13 @@ ApplicationWindow {
                         ColumnLayout {
                             id: rtPreCol
                             width: parent.width; spacing: 0
-                            SettingRow { Layout.fillWidth: true; glyph: win.icoLink; label: T.s("set.routelan"); sub: T.s("set.routelan.sub"); control: Toggle { checked: win.rtLan; onToggled: win.rtLan = value } }
+                            SettingRow { Layout.fillWidth: true; glyph: win.icoLink; label: T.s("set.routelan"); sub: T.s("set.routelan.sub"); control: Toggle { checked: win.rtLan; onToggled: function(value) { win.rtLan = value } } }
                             Rectangle { Layout.fillWidth: true; Layout.leftMargin: 50; height: 1; color: Theme.stroke }
-                            SettingRow { Layout.fillWidth: true; glyph: win.icoRouting; label: T.s("set.routeru"); sub: T.s("set.routeru.sub"); control: Toggle { checked: win.rtRegionDirect; onToggled: win.rtRegionDirect = value } }
+                            SettingRow { Layout.fillWidth: true; glyph: win.icoRouting; label: T.s("set.routeru"); sub: T.s("set.routeru.sub"); control: Toggle { checked: win.rtRegionDirect; onToggled: function(value) { win.rtRegionDirect = value } } }
                             Rectangle { Layout.fillWidth: true; Layout.leftMargin: 50; height: 1; color: Theme.stroke }
-                            SettingRow { Layout.fillWidth: true; glyph: win.icoShield; label: T.s("set.adblock"); sub: T.s("set.adblock.sub"); control: Toggle { checked: win.rtAdblock; onToggled: win.rtAdblock = value } }
+                            SettingRow { Layout.fillWidth: true; glyph: win.icoShield; label: T.s("set.adblock"); sub: T.s("set.adblock.sub"); control: Toggle { checked: win.rtAdblock; onToggled: function(value) { win.rtAdblock = value } } }
                             Rectangle { Layout.fillWidth: true; Layout.leftMargin: 50; height: 1; color: Theme.stroke }
-                            SettingRow { Layout.fillWidth: true; glyph: win.icoLock; label: T.s("set.proxyall"); sub: T.s("set.proxyall.sub"); control: Toggle { checked: win.rtProxyAll; onToggled: win.rtProxyAll = value } }
+                            SettingRow { Layout.fillWidth: true; glyph: win.icoLock; label: T.s("set.proxyall"); sub: T.s("set.proxyall.sub"); control: Toggle { checked: win.rtProxyAll; onToggled: function(value) { win.rtProxyAll = value } } }
                         }
                     }
 
@@ -2196,7 +2253,7 @@ ApplicationWindow {
                         align: TextInput.AlignLeft
                         text: win.appFilter
                         placeholder: T.s("apps.search")
-                        onEdited: win.appFilter = value
+                        onEdited: function(value) { win.appFilter = value }
                     }
 
                     // список приложений
@@ -2379,7 +2436,7 @@ ApplicationWindow {
                             country: modelData.country
                             city: modelData.city
                             ping: modelData.ping
-                            onPicked: win.serverMenuOpen = false
+                            onPicked: { win.serverMenuOpen = false }
                         }
                     }
                 }
@@ -2469,16 +2526,16 @@ ApplicationWindow {
                     Text { text: T.s("modal.sub.title"); color: Theme.text; font.family: Theme.fontFamily; font.pixelSize: 17; font.weight: Font.DemiBold }
 
                     Text { text: T.s("modal.sub.name"); color: Theme.textMuted; font.pixelSize: 10; font.weight: Font.DemiBold; font.letterSpacing: 1; font.family: Theme.fontFamily; Layout.topMargin: 2 }
-                    ValueField { Layout.fillWidth: true; align: TextInput.AlignLeft; text: win.draftSubName; placeholder: T.s("modal.sub.nameph"); onEdited: win.draftSubName = value }
+                    ValueField { Layout.fillWidth: true; align: TextInput.AlignLeft; text: win.draftSubName; placeholder: T.s("modal.sub.nameph"); onEdited: function(value) { win.draftSubName = value } }
 
                     Text { text: T.s("modal.sub.url"); color: Theme.textMuted; font.pixelSize: 10; font.weight: Font.DemiBold; font.letterSpacing: 1; font.family: Theme.fontFamily; Layout.topMargin: 2 }
-                    ValueField { Layout.fillWidth: true; align: TextInput.AlignLeft; text: win.draftSubUrl; placeholder: T.s("modal.sub.urlph"); onEdited: win.draftSubUrl = value }
+                    ValueField { Layout.fillWidth: true; align: TextInput.AlignLeft; text: win.draftSubUrl; placeholder: T.s("modal.sub.urlph"); onEdited: function(value) { win.draftSubUrl = value } }
 
                     RowLayout {
                         Layout.fillWidth: true; Layout.topMargin: 4
                         Text { text: T.s("set.autoupdate"); color: Theme.text; font.family: Theme.fontFamily; font.pixelSize: 13 }
                         Item { Layout.fillWidth: true }
-                        Toggle { checked: win.draftSubAuto; onToggled: win.draftSubAuto = value }
+                        Toggle { checked: win.draftSubAuto; onToggled: function(value) { win.draftSubAuto = value } }
                     }
 
                     RowLayout {
@@ -2572,48 +2629,48 @@ ApplicationWindow {
                             spacing: 10
 
                             FLabel { text: T.s("modal.srv.name") }
-                            ValueField { Layout.fillWidth: true; align: TextInput.AlignLeft; text: win.epName; placeholder: T.s("modal.srv.nameph"); onEdited: win.epName = value }
+                            ValueField { Layout.fillWidth: true; align: TextInput.AlignLeft; text: win.epName; placeholder: T.s("modal.srv.nameph"); onEdited: function(value) { win.epName = value } }
 
                             FLabel { text: T.s("modal.srv.proto") }
-                            ChipRow { Layout.fillWidth: true; options: win.protoList; current: win.epProtocol; onPicked: win.epProtocol = value }
+                            ChipRow { Layout.fillWidth: true; options: win.protoList; current: win.epProtocol; onPicked: function(value) { win.epProtocol = value } }
 
                             FLabel { text: T.s("modal.srv.addrport") }
                             RowLayout {
                                 Layout.fillWidth: true; spacing: 8
-                                ValueField { Layout.fillWidth: true; align: TextInput.AlignLeft; text: win.epAddress; placeholder: "example.com"; onEdited: win.epAddress = value }
-                                ValueField { fieldWidth: 92; numeric: true; text: win.epPort; placeholder: "443"; onEdited: win.epPort = value }
+                                ValueField { Layout.fillWidth: true; align: TextInput.AlignLeft; text: win.epAddress; placeholder: "example.com"; onEdited: function(value) { win.epAddress = value } }
+                                ValueField { fieldWidth: 92; numeric: true; text: win.epPort; placeholder: "443"; onEdited: function(value) { win.epPort = value } }
                             }
 
                             FLabel { visible: serverEditor.pV || serverEditor.pVm; text: "UUID" }
-                            ValueField { visible: serverEditor.pV || serverEditor.pVm; Layout.fillWidth: true; align: TextInput.AlignLeft; text: win.epUuid; placeholder: T.s("modal.srv.uuidph"); onEdited: win.epUuid = value }
+                            ValueField { visible: serverEditor.pV || serverEditor.pVm; Layout.fillWidth: true; align: TextInput.AlignLeft; text: win.epUuid; placeholder: T.s("modal.srv.uuidph"); onEdited: function(value) { win.epUuid = value } }
 
                             FLabel { visible: serverEditor.pT || serverEditor.pSs; text: T.s("modal.srv.password") }
-                            ValueField { visible: serverEditor.pT || serverEditor.pSs; Layout.fillWidth: true; align: TextInput.AlignLeft; text: win.epPassword; placeholder: T.s("modal.srv.passwordph"); onEdited: win.epPassword = value }
+                            ValueField { visible: serverEditor.pT || serverEditor.pSs; Layout.fillWidth: true; align: TextInput.AlignLeft; text: win.epPassword; placeholder: T.s("modal.srv.passwordph"); onEdited: function(value) { win.epPassword = value } }
 
                             FLabel { visible: serverEditor.pSs; text: T.s("modal.srv.method") }
-                            ChipRow { visible: serverEditor.pSs; Layout.fillWidth: true; options: win.ssMethods; current: win.epMethod; onPicked: win.epMethod = value }
+                            ChipRow { visible: serverEditor.pSs; Layout.fillWidth: true; options: win.ssMethods; current: win.epMethod; onPicked: function(value) { win.epMethod = value } }
 
                             FLabel { visible: serverEditor.pWg; text: T.s("modal.srv.wgkey") }
-                            ValueField { visible: serverEditor.pWg; Layout.fillWidth: true; align: TextInput.AlignLeft; text: win.epWgKey; placeholder: "base64 private key"; onEdited: win.epWgKey = value }
+                            ValueField { visible: serverEditor.pWg; Layout.fillWidth: true; align: TextInput.AlignLeft; text: win.epWgKey; placeholder: "base64 private key"; onEdited: function(value) { win.epWgKey = value } }
 
                             FLabel { visible: serverEditor.pWg; text: "PEER PUBLIC KEY" }
-                            ValueField { visible: serverEditor.pWg; Layout.fillWidth: true; align: TextInput.AlignLeft; text: win.epPeerKey; placeholder: "base64 peer public key"; onEdited: win.epPeerKey = value }
+                            ValueField { visible: serverEditor.pWg; Layout.fillWidth: true; align: TextInput.AlignLeft; text: win.epPeerKey; placeholder: "base64 peer public key"; onEdited: function(value) { win.epPeerKey = value } }
 
                             FLabel { visible: serverEditor.pWg; text: "LOCAL ADDRESS" }
-                            ValueField { visible: serverEditor.pWg; Layout.fillWidth: true; align: TextInput.AlignLeft; text: win.epLocalAddr; placeholder: "172.16.0.2/32"; onEdited: win.epLocalAddr = value }
+                            ValueField { visible: serverEditor.pWg; Layout.fillWidth: true; align: TextInput.AlignLeft; text: win.epLocalAddr; placeholder: "172.16.0.2/32"; onEdited: function(value) { win.epLocalAddr = value } }
 
                             FLabel { visible: serverEditor.pWg; text: "ALLOWED IPs" }
-                            ValueField { visible: serverEditor.pWg; Layout.fillWidth: true; align: TextInput.AlignLeft; text: win.epAllowedIps; placeholder: "0.0.0.0/0"; onEdited: win.epAllowedIps = value }
+                            ValueField { visible: serverEditor.pWg; Layout.fillWidth: true; align: TextInput.AlignLeft; text: win.epAllowedIps; placeholder: "0.0.0.0/0"; onEdited: function(value) { win.epAllowedIps = value } }
 
                             RowLayout {
                                 visible: serverEditor.pWg; Layout.fillWidth: true; spacing: 12
                                 ColumnLayout { spacing: 4
                                     FLabel { text: "MTU" }
-                                    ValueField { fieldWidth: 90; numeric: true; text: win.epWgMtu; placeholder: "1420"; onEdited: win.epWgMtu = value }
+                                    ValueField { fieldWidth: 90; numeric: true; text: win.epWgMtu; placeholder: "1420"; onEdited: function(value) { win.epWgMtu = value } }
                                 }
                                 ColumnLayout { Layout.fillWidth: true; spacing: 4
                                     FLabel { text: T.s("modal.srv.psk") }
-                                    ValueField { Layout.fillWidth: true; align: TextInput.AlignLeft; text: win.epPsk; placeholder: T.s("modal.srv.pskph"); onEdited: win.epPsk = value }
+                                    ValueField { Layout.fillWidth: true; align: TextInput.AlignLeft; text: win.epPsk; placeholder: T.s("modal.srv.pskph"); onEdited: function(value) { win.epPsk = value } }
                                 }
                             }
 
@@ -2622,32 +2679,32 @@ ApplicationWindow {
                                 visible: serverEditor.tlsCap; Layout.fillWidth: true
                                 Text { text: "TLS"; color: Theme.text; font.family: Theme.fontFamily; font.pixelSize: 14; Layout.alignment: Qt.AlignVCenter }
                                 Item { Layout.fillWidth: true }
-                                Toggle { Layout.alignment: Qt.AlignVCenter; checked: win.epTls; onToggled: win.epTls = value }
+                                Toggle { Layout.alignment: Qt.AlignVCenter; checked: win.epTls; onToggled: function(value) { win.epTls = value } }
                             }
                             FLabel { visible: serverEditor.tlsCap && win.epTls; text: "SNI" }
-                            ValueField { visible: serverEditor.tlsCap && win.epTls; Layout.fillWidth: true; align: TextInput.AlignLeft; text: win.epSni; placeholder: "server name"; onEdited: win.epSni = value }
+                            ValueField { visible: serverEditor.tlsCap && win.epTls; Layout.fillWidth: true; align: TextInput.AlignLeft; text: win.epSni; placeholder: "server name"; onEdited: function(value) { win.epSni = value } }
 
                             RowLayout {
                                 visible: serverEditor.pV; Layout.fillWidth: true
                                 Text { text: "Reality"; color: Theme.text; font.family: Theme.fontFamily; font.pixelSize: 14; Layout.alignment: Qt.AlignVCenter }
                                 Item { Layout.fillWidth: true }
-                                Toggle { Layout.alignment: Qt.AlignVCenter; checked: win.epReality; onToggled: win.epReality = value }
+                                Toggle { Layout.alignment: Qt.AlignVCenter; checked: win.epReality; onToggled: function(value) { win.epReality = value } }
                             }
                             FLabel { visible: serverEditor.pV && win.epReality; text: "PUBLIC KEY" }
-                            ValueField { visible: serverEditor.pV && win.epReality; Layout.fillWidth: true; align: TextInput.AlignLeft; text: win.epPbk; placeholder: "reality public key"; onEdited: win.epPbk = value }
+                            ValueField { visible: serverEditor.pV && win.epReality; Layout.fillWidth: true; align: TextInput.AlignLeft; text: win.epPbk; placeholder: "reality public key"; onEdited: function(value) { win.epPbk = value } }
                             FLabel { visible: serverEditor.pV && win.epReality; text: "SHORT ID" }
-                            ValueField { visible: serverEditor.pV && win.epReality; Layout.fillWidth: true; align: TextInput.AlignLeft; text: win.epSid; placeholder: "short id"; onEdited: win.epSid = value }
+                            ValueField { visible: serverEditor.pV && win.epReality; Layout.fillWidth: true; align: TextInput.AlignLeft; text: win.epSid; placeholder: "short id"; onEdited: function(value) { win.epSid = value } }
                             FLabel { visible: serverEditor.pV; text: "FLOW" }
-                            ChipRow { visible: serverEditor.pV; Layout.fillWidth: true; options: ["none", "xtls-rprx-vision"]; current: win.epFlow.length ? win.epFlow : "none"; onPicked: win.epFlow = (value === "none" ? "" : value) }
+                            ChipRow { visible: serverEditor.pV; Layout.fillWidth: true; options: ["none", "xtls-rprx-vision"]; current: win.epFlow.length ? win.epFlow : "none"; onPicked: function(value) { win.epFlow = (value === "none" ? "" : value) } }
 
                             FLabel { visible: serverEditor.tlsCap; text: T.s("modal.srv.transport") }
-                            ChipRow { visible: serverEditor.tlsCap; Layout.fillWidth: true; options: win.transports; current: win.epTransport; onPicked: win.epTransport = value }
+                            ChipRow { visible: serverEditor.tlsCap; Layout.fillWidth: true; options: win.transports; current: win.epTransport; onPicked: function(value) { win.epTransport = value } }
                             FLabel { visible: serverEditor.tlsCap && (win.epTransport === "ws" || win.epTransport === "xhttp"); text: "PATH" }
-                            ValueField { visible: serverEditor.tlsCap && (win.epTransport === "ws" || win.epTransport === "xhttp"); Layout.fillWidth: true; align: TextInput.AlignLeft; text: win.epPath; placeholder: "/path"; onEdited: win.epPath = value }
+                            ValueField { visible: serverEditor.tlsCap && (win.epTransport === "ws" || win.epTransport === "xhttp"); Layout.fillWidth: true; align: TextInput.AlignLeft; text: win.epPath; placeholder: "/path"; onEdited: function(value) { win.epPath = value } }
                             FLabel { visible: serverEditor.tlsCap && win.epTransport === "ws"; text: "HOST" }
-                            ValueField { visible: serverEditor.tlsCap && win.epTransport === "ws"; Layout.fillWidth: true; align: TextInput.AlignLeft; text: win.epHost; placeholder: "host header"; onEdited: win.epHost = value }
+                            ValueField { visible: serverEditor.tlsCap && win.epTransport === "ws"; Layout.fillWidth: true; align: TextInput.AlignLeft; text: win.epHost; placeholder: "host header"; onEdited: function(value) { win.epHost = value } }
                             FLabel { visible: serverEditor.tlsCap && win.epTransport === "grpc"; text: "SERVICE NAME" }
-                            ValueField { visible: serverEditor.tlsCap && win.epTransport === "grpc"; Layout.fillWidth: true; align: TextInput.AlignLeft; text: win.epServiceName; placeholder: "grpc service"; onEdited: win.epServiceName = value }
+                            ValueField { visible: serverEditor.tlsCap && win.epTransport === "grpc"; Layout.fillWidth: true; align: TextInput.AlignLeft; text: win.epServiceName; placeholder: "grpc service"; onEdited: function(value) { win.epServiceName = value } }
 
                             Item { Layout.preferredHeight: 2 }
                         }
@@ -2902,7 +2959,7 @@ ApplicationWindow {
                         Layout.fillWidth: true
                         text: win.draftValue
                         placeholder: T.s("modal.rule.ph")
-                        onEdited: win.draftValue = value
+                        onEdited: function(value) { win.draftValue = value }
                     }
 
                     Text { text: T.s("modal.rule.action"); color: Theme.textMuted; font.pixelSize: 10; font.weight: Font.DemiBold; font.letterSpacing: 1; font.family: Theme.fontFamily; Layout.topMargin: 2 }
@@ -2910,7 +2967,7 @@ ApplicationWindow {
                         Layout.fillWidth: true
                         options: [T.s("seg.proxy"), T.s("seg.direct"), T.s("seg.block")]
                         currentIndex: win.draftAction
-                        onSelected: win.draftAction = index
+                        onSelected: function(index) { win.draftAction = index }
                     }
 
                     RowLayout {
@@ -2981,7 +3038,46 @@ ApplicationWindow {
                         }
                     }
 
-                    // моноширинный вывод с авто-скроллом вниз
+                    // строка поиска: case-insensitive substring; пустой фильтр = весь лог
+                    Rectangle {
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: 32
+                        radius: 9
+                        color: Qt.darker(Theme.surface, 1.3)
+                        border.width: 1; border.color: logFilterField.activeFocus ? Theme.accent : Theme.stroke
+                        Behavior on border.color { ColorAnimation { duration: Theme.durFast } }
+                        RowLayout {
+                            anchors.fill: parent
+                            anchors.leftMargin: 10; anchors.rightMargin: 6
+                            spacing: 8
+                            Text {
+                                text: String.fromCharCode(0xE721)        // search glyph
+                                font.family: Theme.iconFamily; font.pixelSize: 13
+                                color: Theme.textMuted
+                            }
+                            TextField {
+                                id: logFilterField
+                                Layout.fillWidth: true
+                                placeholderText: T.s("logs.filter")
+                                color: Theme.text
+                                placeholderTextColor: Theme.textMuted
+                                font.family: Theme.fontFamily
+                                font.pixelSize: 13
+                                background: Item {}
+                                selectByMouse: true
+                            }
+                            Text {
+                                visible: logFilterField.text.length > 0
+                                text: String.fromCharCode(0xE711)        // clear-x
+                                font.family: Theme.iconFamily; font.pixelSize: 11
+                                color: clearFilterHover.hovered ? Theme.red : Theme.textMuted
+                                HoverHandler { id: clearFilterHover; cursorShape: Qt.PointingHandCursor }
+                                TapHandler { onTapped: logFilterField.text = "" }
+                            }
+                        }
+                    }
+
+                    // моноширинный вывод с авто-скроллом вниз и подсветкой совпадений
                     Rectangle {
                         Layout.fillWidth: true; Layout.fillHeight: true
                         radius: Theme.radius
@@ -2996,10 +3092,22 @@ ApplicationWindow {
                             clip: true
                             boundsBehavior: Flickable.StopAtBounds
                             ScrollBar.vertical: ThinScrollBar {}
+                            // Отдельная функция фильтрации: пустой filter → весь буфер; иначе case-insensitive substring
+                            function filteredText() {
+                                var f = logFilterField.text
+                                if (!f || f.length === 0) return backend.logsText
+                                var lc = f.toLowerCase()
+                                var lines = backend.logsText.split("\n")
+                                var out = []
+                                for (var i = 0; i < lines.length; i++) {
+                                    if (lines[i].toLowerCase().indexOf(lc) !== -1) out.push(lines[i])
+                                }
+                                return out.length ? out.join("\n") : ""
+                            }
                             Text {
                                 id: logsText
                                 width: logsFlick.width
-                                text: backend.logsText
+                                text: logsFlick.filteredText()
                                 color: Theme.text
                                 font.family: "Consolas, Courier New, monospace"
                                 font.pixelSize: 12
@@ -3009,6 +3117,15 @@ ApplicationWindow {
                                     if (logsFlick.contentHeight > logsFlick.height)
                                         logsFlick.contentY = logsFlick.contentHeight - logsFlick.height
                                 }
+                                // Перерасчёт при изменении источника или фильтра
+                                Connections {
+                                    target: backend
+                                    function onLogsChanged() { logsText.text = logsFlick.filteredText() }
+                                }
+                                Connections {
+                                    target: logFilterField
+                                    function onTextChanged() { logsText.text = logsFlick.filteredText() }
+                                }
                             }
                         }
                     }
@@ -3016,7 +3133,9 @@ ApplicationWindow {
                     RowLayout {
                         Layout.fillWidth: true
                         Text {
-                            text: T.s("logs.footer")
+                            text: logFilterField.text.length > 0
+                                  ? T.s("logs.found") + " " + (logsText.text.length > 0 ? logsText.text.split("\n").length : 0)
+                                  : T.s("logs.footer")
                             color: Theme.textMuted; font.family: Theme.fontFamily; font.pixelSize: 11
                         }
                         Item { Layout.fillWidth: true }
@@ -3026,7 +3145,15 @@ ApplicationWindow {
                             border.width: 1; border.color: Theme.stroke
                             Text { anchors.centerIn: parent; text: T.s("btn.copy"); color: Theme.text; font.family: Theme.fontFamily; font.pixelSize: 13 }
                             HoverHandler { id: copyLogsHover; cursorShape: Qt.PointingHandCursor }
-                            TapHandler { onTapped: backend.copyToClipboard(backend.logsText) }
+                            TapHandler { onTapped: backend.copyLogs() }
+                        }
+                        Rectangle {
+                            width: 100; height: 32; radius: 9
+                            color: saveLogsHover.hovered ? Theme.hover : "transparent"
+                            border.width: 1; border.color: Theme.stroke
+                            Text { anchors.centerIn: parent; text: T.s("btn.save"); color: Theme.text; font.family: Theme.fontFamily; font.pixelSize: 13 }
+                            HoverHandler { id: saveLogsHover; cursorShape: Qt.PointingHandCursor }
+                            TapHandler { onTapped: backend.exportLogs() }
                         }
                         Rectangle {
                             width: 96; height: 32; radius: 9
@@ -3173,7 +3300,7 @@ ApplicationWindow {
                     spacing: 10
                     Text { text: T.s("modal.profile.title"); color: Theme.text; font.family: Theme.fontFamily; font.pixelSize: 17; font.weight: Font.DemiBold }
                     Text { text: T.s("modal.sub.name"); color: Theme.textMuted; font.pixelSize: 10; font.weight: Font.DemiBold; font.letterSpacing: 1; font.family: Theme.fontFamily; Layout.topMargin: 2 }
-                    ValueField { Layout.fillWidth: true; align: TextInput.AlignLeft; text: win.newProfileName; placeholder: T.s("modal.profile.ph"); onEdited: win.newProfileName = value }
+                    ValueField { Layout.fillWidth: true; align: TextInput.AlignLeft; text: win.newProfileName; placeholder: T.s("modal.profile.ph"); onEdited: function(value) { win.newProfileName = value } }
                     Text {
                         text: T.s("modal.profile.hint")
                         color: Theme.textMuted; font.family: Theme.fontFamily; font.pixelSize: 11; wrapMode: Text.Wrap
