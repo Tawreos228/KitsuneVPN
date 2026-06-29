@@ -104,6 +104,7 @@ class Backend(QObject):
     _speedtestLiveSample = Signal(float)                 # live mbps текущего сервера (раз в ~150ms)
     _subDone = Signal(int, "QVariantList", bool, int, int)   # gi, servers, ok, invalid, profile_interval_h (0 если сервер не задал)
     _logLine = Signal(str)                          # одна строка лога ядра (из фонового потока)
+    _awgStats = Signal(bool, int, int)              # AWG-poller: (running, rx_bytes, tx_bytes) — из фонового потока
     logsChanged = Signal()
     coreInfoChanged = Signal()
     _coreCheckDone = Signal("QVariantMap")
@@ -163,6 +164,19 @@ class Backend(QObject):
         self._load_state()
 
         self._core = engine.Core()
+        # AmneziaWG dual-core: имя активного AWG-tunnel-сервиса. None если не в AWG-сессии.
+        # Когда подключаемся к AWG-серверу — Core(sing-box) не используется, вместо этого
+        # вызывается amneziawg.exe /installtunnelservice. Disconnect делает обратное.
+        self._awg_tunnel_name: str | None = None
+        # Cached AWG-state: poller-thread обновляет, _on_tick читает без subprocess
+        # (sc query / awg.exe show в main thread лагают UI на 100-300ms каждую секунду).
+        self._awg_running_cached = False
+        self._awg_rx_bytes = 0
+        self._awg_tx_bytes = 0
+        self._awg_base_rx = 0
+        self._awg_base_tx = 0
+        self._awg_poller_stop = False
+        self._awgStats.connect(self._on_awg_stats_ready)
         self._settings: dict = {}              # настройки маршрутизации/DNS/mux из UI
         self._conn_tries = 0
         self._tick_n = 0                       # счётчик тиков (рефреш активного пинга)
@@ -184,6 +198,7 @@ class Backend(QObject):
             pass
         try:
             self._clean_leftover_system_proxy()
+            self._clean_leftover_awg_tunnels()
         except Exception:
             pass
         self._pingAllDone.connect(self._on_ping_all)
@@ -326,7 +341,12 @@ class Backend(QObject):
             "stsdone":           "Замер скорости завершён",
             "filereadfail":      "Не удалось прочитать файл",
             "wgbadformat":       "Файл .conf — не валидный WireGuard",
-            "awg_not_supported": "AmneziaWG-обфускация в этой версии Kitsune не активна. Сервер добавлен как обычный WireGuard — DPI его увидит. Для полноценного AWG используйте Amnezia VPN.",
+            "awg_recognized":    "Распознан AmneziaWG-конфиг. При подключении будет использован TUN-режим (требует UAC).",
+            "awg_no_binary":     "Бинарь amneziawg.exe не найден в core/amneziawg/ — переустановите Kitsune Connect.",
+            "awg_needs_admin":   "AmneziaWG требует права администратора (Wintun-драйвер). Сейчас будет запрос UAC.",
+            "awg_install_fail":  "Не удалось поднять AWG-туннель: {err}",
+            "awg_tun_mode":      "AmneziaWG работает только в TUN-режиме (системно). Прокси-порт 127.0.0.1 для этого сервера недоступен.",
+            "pick_conf_title":   "Выберите WireGuard или AmneziaWG .conf",
             "appavail":          "Доступна новая версия Kitsune · {tag}",
             "appuptodate":       "Установлена актуальная версия Kitsune · {ver}",
             "apploading":        "Загрузка обновления Kitsune…",
@@ -396,7 +416,12 @@ class Backend(QObject):
             "stsdone":           "Speed test complete",
             "filereadfail":      "Failed to read file",
             "wgbadformat":       "File is not a valid WireGuard .conf",
-            "awg_not_supported": "AmneziaWG obfuscation is not active in this Kitsune version. Server added as plain WireGuard — DPI will see it. For full AWG support use Amnezia VPN.",
+            "awg_recognized":    "AmneziaWG config recognized. TUN mode will be used on connect (UAC required).",
+            "awg_no_binary":     "amneziawg.exe not found in core/amneziawg/ — reinstall Kitsune Connect.",
+            "awg_needs_admin":   "AmneziaWG requires administrator rights (Wintun driver). A UAC prompt will appear now.",
+            "awg_install_fail":  "Failed to bring up AWG tunnel: {err}",
+            "awg_tun_mode":      "AmneziaWG runs only in TUN mode (system-wide). Proxy port 127.0.0.1 is unavailable for this server.",
+            "pick_conf_title":   "Select WireGuard or AmneziaWG .conf",
             "appavail":          "New Kitsune version available · {tag}",
             "appuptodate":       "Kitsune is up to date · {ver}",
             "apploading":        "Downloading Kitsune update…",
@@ -675,6 +700,46 @@ class Backend(QObject):
         # пользовательский connect — намерение «хочу быть подключённым»
         self._user_disconnected = False
         self._reconnect_attempts = 0
+
+        # AmneziaWG dual-core: если активный сервер — AWG-профиль, используем отдельный
+        # binary (amneziawg.exe /installtunnelservice) вместо sing-box. AWG работает только
+        # в TUN-режиме (своя Wintun-подсистема, без proxy-порта). Mutually exclusive с
+        # sing-box: ostanavливаем его если запущен.
+        active_srv = valid[active_idx]
+        if engine.is_awg_profile(active_srv):
+            if not engine.awg_available():
+                self.notify.emit(self._tr("awg_no_binary"), "error")
+                return
+            if not engine.is_admin():
+                # AWG требует admin (Wintun-driver) — relaunch как при TUN
+                self.notify.emit(self._tr("awg_needs_admin"), "info")
+                self._relaunch_as_admin()
+                return
+            # stop sing-box если был запущен (одна Wintun за раз)
+            try: self._core.stop()
+            except Exception: pass
+            self._set_status("connecting")
+            name = engine.awg_tunnel_name(active_srv)
+            conf = engine.gen_awg_conf(active_srv)
+            ok, msg = engine.awg_install_tunnel(conf, name, on_log=self._logLine.emit)
+            if not ok:
+                self._set_status("disconnected")
+                self.notify.emit(self._tr("awg_install_fail", err=msg[:120]), "error")
+                return
+            self._awg_tunnel_name = name
+            self._awg_running_cached = False
+            self._awg_rx_bytes = 0
+            self._awg_tx_bytes = 0
+            self._awg_base_rx = 0
+            self._awg_base_tx = 0
+            self._awg_poller_stop = False
+            # background poller — обновляет cached state раз в секунду без блокирования UI
+            threading.Thread(target=self._awg_poller_loop,
+                             args=(name,), daemon=True).start()
+            self._conn_tries = 0
+            self._connect_timer.start()
+            return
+
         tun = self._mode == "tun"
         if tun and not engine.is_admin():
             # TUN создаёт системный сетевой адаптер → нужны права администратора.
@@ -727,6 +792,20 @@ class Backend(QObject):
 
     def _poll_connect(self) -> None:
         self._conn_tries += 1
+        # AWG-сессия: cached значение от poller-thread'а (без subprocess в main)
+        if self._awg_tunnel_name:
+            if self._awg_running_cached:
+                self._connect_timer.stop()
+                self._on_connected()
+            elif self._conn_tries > 26:
+                self._connect_timer.stop()
+                self._awg_poller_stop = True
+                engine.awg_uninstall_tunnel(self._awg_tunnel_name)
+                self._awg_tunnel_name = None
+                self._set_status("disconnected")
+                self.notify.emit(self._tr("conntimeout"), "error")
+            return
+        # sing-box сессия — классическая проверка через port
         if engine.port_listening(self._effective_port()):
             self._connect_timer.stop()
             self._on_connected()
@@ -735,6 +814,20 @@ class Backend(QObject):
             self._core.stop()
             self._set_status("disconnected")
             self.notify.emit(self._tr("conntimeout"), "error")
+
+    def _clean_leftover_awg_tunnels(self) -> None:
+        """При старте Backend: ищем все осиротевшие AmneziaWGTunnel$kitsune_* сервисы
+        от прошлого запуска (crash, killed Kitsune, system shutdown без disconnect) и
+        удаляем их. Иначе после reboot эти tunnel'и поднимаются сами (startup type Auto)
+        и юзер получает IP сервера без работающего Kitsune. См. memory feedback_kitsune_workflow.md
+        раздел «не оставлять persistent system state» — incident 2026-06-29."""
+        if not engine.is_admin():
+            return       # для sc delete нужен admin — но и tunnel был установлен от admin'а
+        try:
+            for name in engine.awg_list_kitsune_tunnels():
+                engine.awg_force_remove_tunnel(name)
+        except Exception:
+            pass
 
     def _clean_leftover_system_proxy(self) -> None:
         """При старте Backend: выключаем системный прокси если он указывает на любой loopback
@@ -799,7 +892,14 @@ class Backend(QObject):
         if self._status == "connecting":
             self._user_disconnected = True
             self._connect_timer.stop()
-            self._core.stop()
+            if self._awg_tunnel_name:
+                self._awg_poller_stop = True
+                try: engine.awg_uninstall_tunnel(self._awg_tunnel_name)
+                except Exception: pass
+                self._awg_tunnel_name = None
+                self._awg_running_cached = False
+            else:
+                self._core.stop()
             self._set_status("disconnected")
         elif self._status == "connected":
             self._user_disconnected = True
@@ -1564,6 +1664,20 @@ class Backend(QObject):
             return
         self._add_custom_app(os.path.splitext(os.path.basename(path))[0], path)
 
+    @Slot()
+    def pickAndImportConf(self) -> None:
+        """File-picker для WireGuard / AmneziaWG .conf. Альтернатива drag-and-drop'у —
+        для юзеров где DnD не сработал (overlay, права, etc.) или для AWG-конфигов
+        которые сейчас единственный путь импорта AWG-сервера."""
+        from PySide6.QtWidgets import QFileDialog
+        path, _filt = QFileDialog.getOpenFileName(
+            None, self._tr("pick_conf_title"),
+            os.path.expanduser("~"),
+            "WireGuard/AmneziaWG (*.conf);;Все файлы (*)")
+        if not path:
+            return
+        self.importFromFile(path)
+
     def _add_custom_app(self, name: str, exe: str) -> None:
         if not exe or not os.path.exists(exe):
             self.notify.emit(self._tr("filenotfound", path=exe[:80]), "error")
@@ -1832,7 +1946,11 @@ class Backend(QObject):
                      "jc", "jmin", "jmax",
                      "s0", "s1", "s2", "s3", "s4",
                      "h1", "h2", "h3", "h4",
-                     "i1", "i2", "i3", "i4", "i5"]
+                     "i1", "i2", "i3", "i4", "i5",
+                     # DNS из .conf — для AWG-туннеля критичен (иначе DNS leak)
+                     "wgDns",
+                     # PersistentKeepalive для NAT-traversal
+                     "keepAlive"]
 
     def _make_server(self, data: dict, keep_ping=None) -> dict:
         name = (data.get("name") or "").strip() or (data.get("address") or "Сервер")
@@ -2258,7 +2376,7 @@ class Backend(QObject):
             awg_keys = {"jc", "jmin", "jmax", "s0", "s1", "s2", "s3", "s4",
                         "h1", "h2", "h3", "h4", "i1", "i2", "i3", "i4", "i5"}
             if any(k in wg for k in awg_keys):
-                self.notify.emit(self._tr("awg_not_supported"), "info")
+                self.notify.emit(self._tr("awg_recognized"), "info")
             srv = self._make_server(wg)
             ok, _err = self._validate_server(srv)
             srv["_valid"] = ok
@@ -2377,7 +2495,17 @@ class Backend(QObject):
 
     def _disconnect(self) -> None:
         self._connect_timer.stop()
-        self._core.stop()
+        # AWG-сессия: останавливаем poller-thread + удаляем Windows-tunnel-service.
+        if self._awg_tunnel_name:
+            self._awg_poller_stop = True
+            try:
+                engine.awg_uninstall_tunnel(self._awg_tunnel_name)
+            except Exception:
+                pass
+            self._awg_tunnel_name = None
+            self._awg_running_cached = False
+        else:
+            self._core.stop()
         self._set_system_proxy(False)
         # kill-switch: при штатном disconnect снимаем блокировку (юзер сам решил отключиться)
         try:
@@ -2396,16 +2524,27 @@ class Backend(QObject):
     def _on_tick(self) -> None:
         self._elapsed += 1
         self._tick_n += 1
-        # watchdog: если status=connected но порт ядра упал — нештатный обрыв
-        if not engine.port_listening(self._effective_port()):
-            self._handle_unexpected_drop()
-            return
+        # watchdog: cached значения от AWG-poller'а (без subprocess в main thread)
+        # или реальный port-check для sing-box.
+        if self._awg_tunnel_name:
+            if not self._awg_running_cached:
+                self._handle_unexpected_drop()
+                return
+        else:
+            if not engine.port_listening(self._effective_port()):
+                self._handle_unexpected_drop()
+                return
         prev_down, prev_up = self._down, self._up
-        # реальный трафик за сессию из Clash API (накопительно, МБ)
-        t = engine.clash_traffic()
-        if t:
-            self._down = max(0, t[0] - self._base_down) / 1048576.0
-            self._up = max(0, t[1] - self._base_up) / 1048576.0
+        # реальный трафик: для AWG — rx/tx из awg.exe show (через poller, cached);
+        # для sing-box — clash_api.
+        if self._awg_tunnel_name:
+            self._down = max(0, self._awg_rx_bytes - self._awg_base_rx) / 1048576.0
+            self._up   = max(0, self._awg_tx_bytes - self._awg_base_tx) / 1048576.0
+        else:
+            t = engine.clash_traffic()
+            if t:
+                self._down = max(0, t[0] - self._base_down) / 1048576.0
+                self._up = max(0, t[1] - self._base_up) / 1048576.0
         # delta MB за тик (≈ MB/s) для rolling-chart истории
         self._traffic_hist_down.append(max(0.0, self._down - prev_down))
         self._traffic_hist_up.append(max(0.0, self._up - prev_up))
@@ -2413,6 +2552,31 @@ class Backend(QObject):
         if self._tick_n % 5 == 0:
             self._refresh_active_ping()
         self.statsChanged.emit()
+
+    def _awg_poller_loop(self, name: str) -> None:
+        """Фоновый поток: пока есть активный AWG-tunnel, раз в секунду опрашивает
+        Windows-service status + статистику трафика через CLI. Результат шлём через
+        Signal _awgStats в main thread (Qt автоматически queue'тит). UI остаётся отзывчивым."""
+        while not self._awg_poller_stop and self._awg_tunnel_name == name:
+            try:
+                running = engine.awg_tunnel_running(name)
+                stats = engine.awg_iface_stats(name) if running else None
+                rx, tx = stats if stats else (0, 0)
+                self._awgStats.emit(running, rx, tx)
+            except Exception:
+                pass
+            time.sleep(1.0)
+
+    @Slot(bool, int, int)
+    def _on_awg_stats_ready(self, running: bool, rx: int, tx: int) -> None:
+        """Принимает обновление от poller'а в main thread (queued signal)."""
+        self._awg_running_cached = running
+        if rx and not self._awg_base_rx:
+            self._awg_base_rx = rx     # первое значение = baseline
+        if tx and not self._awg_base_tx:
+            self._awg_base_tx = tx
+        self._awg_rx_bytes = rx
+        self._awg_tx_bytes = tx
 
     def _handle_unexpected_drop(self) -> None:
         """Соединение оборвалось не по воле юзера. Если auto-reconnect включён и лимит попыток
@@ -2807,6 +2971,19 @@ def main() -> int:
     app.setOrganizationName("KitsuneVPN")
     app.setQuitOnLastWindowClosed(False)  # окно закрыли -> уходим в трей, не выходим
 
+    # UIPI workaround: когда Kitsune запущен как admin (для TUN/AWG), Windows блокирует
+    # WM_DROPFILES/WM_COPYDATA от low-integrity Explorer (drag-and-drop). Разрешаем явно.
+    # Без этого юзер не может drag-and-drop'нуть .conf файл в окно — Windows тихо съест event.
+    # Reference: msdn ChangeWindowMessageFilterEx, MSGFLT_ALLOW.
+    if engine.is_admin():
+        try:
+            user32 = ctypes.windll.user32
+            user32.ChangeWindowMessageFilter(0x0233, 1)  # WM_DROPFILES = 0x233, MSGFLT_ADD = 1
+            user32.ChangeWindowMessageFilter(0x004A, 1)  # WM_COPYDATA
+            user32.ChangeWindowMessageFilter(0x0049, 1)  # WM_COPYGLOBALDATA
+        except Exception:
+            pass    # старая версия Windows / нет user32 — drag-and-drop в elevated всё равно не сработает
+
     icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "icon.ico")
     if os.path.exists(icon_path):
         app.setWindowIcon(QIcon(icon_path))
@@ -2838,7 +3015,19 @@ def main() -> int:
         except Exception: pass
         try: backend._core.stop()
         except Exception: pass
+        # AWG-tunnel: критично снять перед exit — иначе сервис останется и поднимется
+        # сам после перезагрузки Windows (startup type Auto у AmneziaWGTunnel$).
+        # Снимаем активный (если есть) + дополнительно scan'им все orphans с префиксом kitsune_.
+        try:
+            if backend._awg_tunnel_name:
+                engine.awg_force_remove_tunnel(backend._awg_tunnel_name)
+                backend._awg_tunnel_name = None
+            for name in engine.awg_list_kitsune_tunnels():
+                engine.awg_force_remove_tunnel(name)
+        except Exception: pass
     atexit.register(_emergency_cleanup)
+    # QApplication.aboutToQuit — graceful shutdown (юзер сделал Quit из трея, например)
+    app.aboutToQuit.connect(_emergency_cleanup)
     for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGBREAK if hasattr(signal, 'SIGBREAK') else signal.SIGTERM):
         try: signal.signal(sig, lambda *_: (_emergency_cleanup(), os._exit(0)))
         except Exception: pass

@@ -15,6 +15,7 @@ datas = [
     (str(ROOT / "assets"), "assets"),                         # иконки, кадры трея
     (str(ROOT / "core" / "rulesets"), "core/rulesets"),       # bundled .srs
     (str(ROOT / "core" / "sing-box.exe"), "core"),            # официальный sing-box (upstream)
+    (str(ROOT / "core" / "amneziawg"), "core/amneziawg"),     # AmneziaWG tunnel daemon (amneziawg.exe + awg.exe + wintun.dll)
 ]
 
 # Hidden imports — PyInstaller часто пропускает Qt-плагины и quick controls

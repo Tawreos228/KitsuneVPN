@@ -989,7 +989,8 @@ ApplicationWindow {
                     }
                     Row {
                         spacing: 7
-                        Text { text: win.icoDown; font.family: Theme.iconFamily; font.pixelSize: 14; color: Theme.textMuted; anchors.verticalCenter: parent.verticalCenter }
+                        // download-стрелка цвета teal — совпадает с цветом download-линии графика выше
+                        Text { text: win.icoDown; font.family: Theme.iconFamily; font.pixelSize: 14; color: Theme.teal; anchors.verticalCenter: parent.verticalCenter }
                         Text {
                             text: backend.status === "connected" ? win.fmtTraffic(backend.down) : "—"
                             color: Theme.textSub; font.family: Theme.fontFamily; font.pixelSize: 15; font.weight: Font.Medium
@@ -998,7 +999,8 @@ ApplicationWindow {
                     }
                     Row {
                         spacing: 7
-                        Text { text: win.icoUp; font.family: Theme.iconFamily; font.pixelSize: 14; color: Theme.textMuted; anchors.verticalCenter: parent.verticalCenter }
+                        // upload-стрелка цвета accent — совпадает с цветом upload-линии графика
+                        Text { text: win.icoUp; font.family: Theme.iconFamily; font.pixelSize: 14; color: Theme.accent; anchors.verticalCenter: parent.verticalCenter }
                         Text {
                             text: backend.status === "connected" ? win.fmtTraffic(backend.up) : "—"
                             color: Theme.textSub; font.family: Theme.fontFamily; font.pixelSize: 15; font.weight: Font.Medium
@@ -1071,6 +1073,21 @@ ApplicationWindow {
                         }
                         HoverHandler { id: pasteHover; cursorShape: Qt.PointingHandCursor }
                         TapHandler { onTapped: backend.importFromClipboard() }
+                    }
+                    Item { width: 8 }
+                    // Импорт .conf файла (WireGuard / AmneziaWG) через системный file-picker —
+                    // альтернатива drag-and-drop'у, гарантированно работает.
+                    Rectangle {
+                        width: importConfRow.implicitWidth + 26; height: 34; radius: 17
+                        color: importConfHover.hovered ? Theme.hover : "transparent"
+                        border.width: 1; border.color: Theme.stroke
+                        Row {
+                            id: importConfRow; anchors.centerIn: parent; spacing: 6
+                            Text { text: String.fromCharCode(0xE8E5); font.family: Theme.iconFamily; font.pixelSize: 14; color: Theme.text; anchors.verticalCenter: parent.verticalCenter }
+                            Text { text: T.s("btn.import_conf"); color: Theme.text; font.pixelSize: 13; font.weight: Font.Medium; font.family: Theme.fontFamily; anchors.verticalCenter: parent.verticalCenter }
+                        }
+                        HoverHandler { id: importConfHover; cursorShape: Qt.PointingHandCursor }
+                        TapHandler { onTapped: backend.pickAndImportConf() }
                     }
                     Item { width: 8 }
                     Rectangle {
@@ -1355,6 +1372,7 @@ ApplicationWindow {
                         city: modelData.city
                         ping: modelData.ping
                         speedMbps: modelData.speedMbps
+                        isAwg: !!(modelData.jc !== undefined || modelData.h1 !== undefined || modelData.i1 !== undefined)
                         editable: true
                         rowIndex: modelData._idx
                         fav: modelData.fav
@@ -2436,6 +2454,7 @@ ApplicationWindow {
                             country: modelData.country
                             city: modelData.city
                             ping: modelData.ping
+                            isAwg: !!(modelData.jc !== undefined || modelData.h1 !== undefined || modelData.i1 !== undefined)
                             onPicked: { win.serverMenuOpen = false }
                         }
                     }
@@ -3589,12 +3608,19 @@ ApplicationWindow {
             }
 
             // Drag-and-drop импорт: WireGuard .conf или текст с ссылками vless://...
+            // ВАЖНО: z выставлен в максимум, чтобы любые overlay'и/модалки/wizard НЕ перехватывали
+            // drop-события. keys-фильтр убран: на Windows Qt 6 шлёт URLs не через "text/uri-list"
+            // (нативный shell-drop), поэтому проверяем hasUrls в onEntered сами.
             DropArea {
                 id: dropArea
                 anchors.fill: parent
-                keys: ["text/uri-list"]
-                onEntered: function(drag) { drag.accept() }
+                z: 99999
+                onEntered: function(drag) {
+                    if (drag.hasUrls) drag.accept()
+                    else drag.accepted = false
+                }
                 onDropped: function(drop) {
+                    if (!drop.hasUrls) return
                     for (var i = 0; i < drop.urls.length; i++) {
                         var p = drop.urls[i].toString().replace(/^file:\/+/, "")
                         p = decodeURIComponent(p)
@@ -3604,10 +3630,11 @@ ApplicationWindow {
                 }
             }
 
-            // overlay при перетаскивании — мягко затухает после drop
+            // overlay при перетаскивании — мягко затухает после drop. Под DropArea по z.
             Rectangle {
                 id: dropOverlay
                 anchors.fill: parent
+                z: 99998
                 opacity: dropArea.containsDrag ? 1 : 0
                 visible: opacity > 0.01
                 color: Qt.rgba(Theme.bg.r, Theme.bg.g, Theme.bg.b, 0.92)

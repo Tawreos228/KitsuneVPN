@@ -14,6 +14,7 @@ Item {
     property string city
     property int ping
     property real speedMbps: 0
+    property bool isAwg: false           // AmneziaWG-сервер — рисуем мини-чип «AWG» рядом с city
     readonly property string fullName: country + " · " + city
     readonly property bool selected: backend.server === fullName
     property bool editable: false
@@ -78,13 +79,37 @@ Item {
                     font.weight: Font.Medium
                     elide: Text.ElideRight
                 }
-                Text {
+                RowLayout {
                     Layout.fillWidth: true
-                    text: card.city
-                    color: Theme.textMuted
-                    font.family: Theme.fontFamily
-                    font.pixelSize: 12
-                    elide: Text.ElideRight
+                    spacing: 6
+                    Text {
+                        text: card.city
+                        color: Theme.textMuted
+                        font.family: Theme.fontFamily
+                        font.pixelSize: 12
+                        elide: Text.ElideRight
+                        Layout.fillWidth: true
+                    }
+                    // AWG-чип: маленький бейдж справа от city для AmneziaWG-серверов
+                    Rectangle {
+                        visible: card.isAwg
+                        implicitHeight: 16
+                        implicitWidth: awgLbl.implicitWidth + 10
+                        radius: 8
+                        color: Qt.rgba(Theme.accent.r, Theme.accent.g, Theme.accent.b, 0.18)
+                        border.width: 1
+                        border.color: Qt.rgba(Theme.accent.r, Theme.accent.g, Theme.accent.b, 0.45)
+                        Text {
+                            id: awgLbl
+                            anchors.centerIn: parent
+                            text: "AWG"
+                            color: Theme.accent
+                            font.family: Theme.fontFamily
+                            font.pixelSize: 9
+                            font.weight: Font.Bold
+                            font.letterSpacing: 0.5
+                        }
+                    }
                 }
             }
 

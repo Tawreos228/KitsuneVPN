@@ -43,7 +43,7 @@ _GH_NEKORAY_API = "https://api.github.com/repos/MatsuriDayo/nekoray/releases/lat
 _GH_KITSUNE_API = "https://api.github.com/repos/Tawreos228/Kitsune-Connect/releases/latest"
 
 # Версия приложения — синхронизировать с installer.iss MyAppVersion перед каждым релизом.
-APP_VERSION = "0.3.1"
+APP_VERSION = "0.5.0"
 
 # базы для bundled-подобных rule-set'ов (тянутся ядром по требованию)
 _GEOSITE_URL = "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-{}.srs"
@@ -435,12 +435,19 @@ def parse_wireguard_conf(text: str) -> dict | None:
     addr = (iface.get("Address") or iface.get("address") or "").strip()
     if addr:
         out["localAddr"] = addr
+    dns = (iface.get("DNS") or iface.get("dns") or "").strip()
+    if dns:
+        out["wgDns"] = dns           # для AWG-туннеля важно эмитить DNS, иначе leak через system DNS
     allowed = (peer.get("AllowedIPs") or peer.get("allowedips") or "").strip()
     if allowed:
         out["allowedIps"] = allowed
     psk = (peer.get("PresharedKey") or peer.get("presharedkey") or "").strip()
     if psk:
         out["psk"] = psk
+    keep = (peer.get("PersistentKeepalive") or peer.get("persistentkeepalive") or "").strip()
+    if keep:
+        try: out["keepAlive"] = int(keep)
+        except ValueError: pass
     mtu = (iface.get("MTU") or iface.get("mtu") or "").strip()
     if mtu:
         try:
@@ -1645,6 +1652,222 @@ def lookup_ip_info(port: int | None = None, timeout: float = 6.0) -> dict | None
             "city":         d.get("city") or "",
             "org":          d.get("org") or d.get("isp") or "",
         }
+    return None
+
+
+# ---- AmneziaWG (dual-core: для AWG-серверов отдельный binary) ----
+_AWG_DIR = _CORE_DIR / "amneziawg"
+_AWG_EXE = _AWG_DIR / "amneziawg.exe"
+_AWG_KEYS = ("jc", "jmin", "jmax", "s0", "s1", "s2", "s3", "s4",
+             "h1", "h2", "h3", "h4", "i1", "i2", "i3", "i4", "i5")
+
+
+def is_awg_profile(s: dict) -> bool:
+    """True если в server-dict присутствует хотя бы одно AWG-поле обфускации."""
+    return isinstance(s, dict) and any(s.get(k) is not None for k in _AWG_KEYS)
+
+
+def awg_available() -> bool:
+    """True если bundled amneziawg.exe найден (значит мы можем запускать AWG-туннели)."""
+    return _AWG_EXE.exists()
+
+
+def awg_tunnel_name(server: dict) -> str:
+    """Стабильное имя tunnel-сервиса в Windows. Используется для install/uninstall/status.
+    Должно совпадать с basename .conf файла без расширения (это требование amneziawg.exe)."""
+    # ограничиваем длину и спецсимволы — Windows service name max 80 chars
+    addr = (server.get("address") or "awg").lower()
+    addr = re.sub(r"[^a-z0-9._-]", "_", addr)[:24]
+    port = server.get("port", "")
+    return f"kitsune_{addr}_{port}"
+
+
+def gen_awg_conf(server: dict) -> str:
+    """Профиль -> текстовый .conf формата amneziawg-windows-client.
+    Структура совпадает с WireGuard .conf + AmneziaWG-обфускацией (Jc/Jmin/Jmax/S1-S4/H1-H4/I1-I5)."""
+    pk = server.get("wgKey", "")
+    addr = server.get("localAddr") or "10.66.66.2/32"
+    if isinstance(addr, list):
+        addr = ", ".join(addr)
+    mtu = int(server.get("mtu") or 1280)
+
+    lines = ["[Interface]",
+             f"PrivateKey = {pk}",
+             f"Address = {addr}"]
+    if server.get("wgDns"):
+        lines.append(f"DNS = {server['wgDns']}")
+    lines.append(f"MTU = {mtu}")
+    # AWG-поля если есть — пишем в правильном регистре (Jc, Jmin, ...) как ждёт amneziawg
+    for k in ("jc", "jmin", "jmax", "s0", "s1", "s2", "s3", "s4",
+              "h1", "h2", "h3", "h4"):
+        v = server.get(k)
+        if v is not None:
+            lines.append(f"{k.capitalize() if len(k) == 2 else k[0].upper()+k[1:]} = {int(v)}")
+    for k in ("i1", "i2", "i3", "i4", "i5"):
+        v = server.get(k)
+        if v:
+            lines.append(f"{k.upper()} = {v}")
+
+    peer_endpoint = f"{server.get('address','')}:{int(server.get('port') or 51820)}"
+    allowed = server.get("allowedIps") or "0.0.0.0/0, ::/0"
+    if isinstance(allowed, list):
+        allowed = ", ".join(allowed)
+    lines += ["",
+              "[Peer]",
+              f"PublicKey = {server.get('peerKey','')}",
+              f"Endpoint = {peer_endpoint}",
+              f"AllowedIPs = {allowed}"]
+    if server.get("psk"):
+        lines.append(f"PresharedKey = {server['psk']}")
+    if server.get("keepAlive"):
+        lines.append(f"PersistentKeepalive = {int(server['keepAlive'])}")
+    return "\n".join(lines) + "\n"
+
+
+def awg_install_tunnel(conf_text: str, name: str, on_log=None) -> tuple[bool, str]:
+    """Запускает amneziawg.exe /installtunnelservice <name>.conf — создаёт Windows-service
+    с Wintun-туннелем. Требует admin (elevation). Имя .conf должно совпадать с именем service.
+    Возвращает (ok, msg). msg = stderr/stdout если ошибка, иначе путь к .conf."""
+    if not awg_available():
+        return False, "amneziawg.exe не найден в core/amneziawg/"
+    # amneziawg.exe сервис: имя service = basename .conf без расширения
+    conf_dir = Path(tempfile.gettempdir()) / "kitsune_awg"
+    conf_dir.mkdir(parents=True, exist_ok=True)
+    conf_path = conf_dir / f"{name}.conf"
+    conf_path.write_text(conf_text, encoding="utf-8")
+    try:
+        r = subprocess.run([str(_AWG_EXE), "/installtunnelservice", str(conf_path)],
+                           capture_output=True, text=True, timeout=15, **_hidden_kwargs())
+        if on_log:
+            try: on_log(f"[awg install] exit={r.returncode} {r.stdout.strip()} {r.stderr.strip()}")
+            except Exception: pass
+        if r.returncode != 0:
+            return False, (r.stderr or r.stdout or "exit code != 0")[:300]
+        # КРИТИЧНО: amneziawg ставит сервис в startup type Auto (стартует при boot).
+        # Это означает что если Kitsune закроется/упадёт без disconnect — туннель оживёт
+        # сам после reboot. Меняем на demand (MANUAL) — только мы решаем когда запускать.
+        # Incident 2026-06-29 — см. memory feedback_kitsune_workflow.md.
+        try:
+            subprocess.run(["sc", "config", f"AmneziaWGTunnel${name}", "start=", "demand"],
+                           capture_output=True, text=True, timeout=5, **_hidden_kwargs())
+        except Exception:
+            pass
+        return True, str(conf_path)
+    except Exception as e:
+        return False, f"{type(e).__name__}: {e}"
+
+
+def awg_uninstall_tunnel(name: str) -> tuple[bool, str]:
+    """Удаляет tunnel-service по имени. /uninstalltunnelservice требует имя без .conf."""
+    if not awg_available():
+        return False, "amneziawg.exe не найден"
+    try:
+        r = subprocess.run([str(_AWG_EXE), "/uninstalltunnelservice", name],
+                           capture_output=True, text=True, timeout=10, **_hidden_kwargs())
+        # cleanup .conf файла (если остался)
+        conf_path = Path(tempfile.gettempdir()) / "kitsune_awg" / f"{name}.conf"
+        try: conf_path.unlink(missing_ok=True)
+        except Exception: pass
+        if r.returncode != 0:
+            return False, (r.stderr or r.stdout or "exit != 0")[:300]
+        return True, ""
+    except Exception as e:
+        return False, f"{type(e).__name__}: {e}"
+
+
+def awg_list_kitsune_tunnels() -> list[str]:
+    """Список имён всех Windows-сервисов `AmneziaWGTunnel$kitsune_*` (наших orphans).
+    Используется для cleanup на старте Backend и при выходе — найти любые туннели
+    оставшиеся от прошлой сессии (crash, killed Kitsune, system shutdown без disconnect).
+    sc.exe отдаёт вывод в OEM (cp866 на ру-локали) — берём через bytes+ignore чтобы не падать."""
+    try:
+        r = subprocess.run(["sc", "query", "type=", "service", "state=", "all"],
+                           capture_output=True, timeout=10, **_hidden_kwargs())
+        if r.returncode != 0:
+            return []
+        # имена сервисов всегда ASCII — берём ignore-decode чтобы не споткнуться о русские описания
+        text = (r.stdout or b"").decode("ascii", errors="ignore")
+        out = []
+        for line in text.splitlines():
+            line = line.strip()
+            if line.startswith("SERVICE_NAME:"):
+                svc = line.split(":", 1)[1].strip()
+                # формат: AmneziaWGTunnel$kitsune_<addr>_<port>
+                if svc.startswith("AmneziaWGTunnel$kitsune_"):
+                    out.append(svc.split("$", 1)[1])
+        return out
+    except Exception:
+        return []
+
+
+def awg_force_remove_tunnel(name: str) -> None:
+    """Жёсткое удаление tunnel-сервиса. Сначала пробуем штатный
+    amneziawg.exe /uninstalltunnelservice (если есть), потом sc stop/delete как fallback.
+    Тихо игнорируем ошибки — на старте Backend важнее не упасть чем точно отчитаться."""
+    if _AWG_EXE.exists():
+        try:
+            subprocess.run([str(_AWG_EXE), "/uninstalltunnelservice", name],
+                           capture_output=True, text=True, timeout=10, **_hidden_kwargs())
+            return
+        except Exception:
+            pass
+    svc = f"AmneziaWGTunnel${name}"
+    for cmd in (["sc", "stop", svc], ["sc", "delete", svc]):
+        try:
+            subprocess.run(cmd, capture_output=True, text=True, timeout=10, **_hidden_kwargs())
+        except Exception:
+            pass
+
+
+def awg_tunnel_running(name: str) -> bool:
+    """True если Windows-service AmneziaWGTunnel$<name> в статусе Running. Используется
+    watchdog'ом Backend (заменяет port_listening для AWG-серверов — у них нет proxy-порта).
+    sc.exe вывод в OEM (cp866 на ру-локали) — поэтому bytes+ascii-ignore вместо text=True."""
+    try:
+        r = subprocess.run(["sc", "query", f"AmneziaWGTunnel${name}"],
+                           capture_output=True, timeout=5, **_hidden_kwargs())
+        return r.returncode == 0 and b"RUNNING" in (r.stdout or b"")
+    except Exception:
+        return False
+
+
+def awg_iface_stats(name: str) -> tuple[int, int] | None:
+    """rx/tx bytes для AmneziaWG-туннеля через `awg.exe show <iface>` (аналог wg show).
+    Возвращает (rx_bytes, tx_bytes) или None если интерфейс не найден / awg.exe нет.
+    Используется графиком трафика когда активен AWG (clash_api от sing-box недоступен — его нет)."""
+    awg_cli = _AWG_DIR / "awg.exe"
+    if not awg_cli.exists():
+        return None
+    try:
+        r = subprocess.run([str(awg_cli), "show", name, "transfer"],
+                           capture_output=True, text=True, timeout=3, **_hidden_kwargs())
+        if r.returncode != 0:
+            return None
+        # формат: "<peer-pubkey>\t<rx-bytes>\t<tx-bytes>" по одной строке на peer
+        rx = tx = 0
+        for line in (r.stdout or "").splitlines():
+            parts = line.strip().split("\t")
+            if len(parts) >= 3:
+                try:
+                    rx += int(parts[1]); tx += int(parts[2])
+                except ValueError:
+                    continue
+        return (rx, tx)
+    except Exception:
+        return None
+
+
+def awg_tunnel_exit_ip(timeout: float = 6.0) -> str | None:
+    """После старта AWG-туннеля весь трафик идёт через него (системно, не через proxy-порт).
+    Здесь просто резолвим публичный IP через прямой HTTP — он попадёт в AWG-туннель."""
+    for url in ("http://api.ipify.org", "http://ifconfig.me/ip"):
+        try:
+            with urllib.request.urlopen(url, timeout=timeout) as r:
+                ip = r.read().decode("utf-8").strip()
+                if ip:
+                    return ip
+        except Exception:
+            continue
     return None
 
 

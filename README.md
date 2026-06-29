@@ -43,7 +43,11 @@
 - **VMess** &middot; classic + AEAD
 - **Trojan** &middot; TLS / Reality
 - **Shadowsocks** &middot; AEAD + 2022 ciphers
+- **Hysteria 2** &middot; obfs salamander, port-hopping
+- **TUIC v5** &middot; congestion control, 0-RTT
 - **WireGuard** &middot; 1.13 endpoint schema
+- **AmneziaWG** &middot; via bundled `amneziawg.exe` (Wintun TUN), AWG 1.5/2.0 fields
+- **Subscriptions** &middot; URI-list, base64, Clash/Mihomo YAML
 - **Transports** &middot; tcp / ws / grpc / httpupgrade / **xhttp**
 
 #### 🧭 &nbsp;Routing
